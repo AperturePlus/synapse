@@ -25,6 +25,7 @@ dependencies = [
     "tree-sitter-java>=0.23.0",
     "tree-sitter-go>=0.23.0",
     "rich>=13.0.0",
+    "python-dotenv>=1.2.1",
 ]
 
 [project.scripts]
@@ -56,6 +57,7 @@ dev = [
     "hypothesis>=6.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
+    "python-dotenv>=1.2.1",
 ]
 
 # 如果你需要特定的文档构建环境，可以单独列出

@@ -42,6 +42,14 @@ class SynapseConfig(BaseSettings):
         description="Default maximum depth for graph traversals",
     )
 
+    # Batch write settings
+    batch_write_size: int = Field(
+        default=1000,
+        ge=100,
+        le=10000,
+        description="Batch size for bulk write operations",
+    )
+
     # Neo4j connection
     neo4j_uri: str = Field(
         default="bolt://localhost:7687",

@@ -73,23 +73,23 @@ def call_chain_ir(draw: st.DrawFn) -> IR:
     """
     language = draw(st.sampled_from(list(LanguageType)))
 
+    # Generate base qualified name to ensure uniqueness
+    base_qname = draw(simple_qualified_name)
+
     # Create root callable
     root_id = f"call_root_{draw(st.integers(min_value=1, max_value=999))}"
 
     # Create enough callees to test pagination (5-15 callees)
     num_callees = draw(st.integers(min_value=5, max_value=15))
-    callee_ids = [
-        f"call_callee_{i}_{draw(st.integers(min_value=1, max_value=999))}"
-        for i in range(num_callees)
-    ]
+    callee_ids = [f"call_callee_{i}_{draw(st.integers(min_value=1, max_value=999))}" for i in range(num_callees)]
 
     root = Callable(
         id=root_id,
         name=draw(simple_identifier),
-        qualified_name=draw(simple_qualified_name),
+        qualified_name=base_qname,
         kind=CallableKind.METHOD,
         language_type=language,
-        signature=draw(simple_signature),
+        signature="root()",
         is_static=False,
         visibility=Visibility.PUBLIC,
         return_type=None,
@@ -99,14 +99,15 @@ def call_chain_ir(draw: st.DrawFn) -> IR:
 
     callables = {root.id: root}
 
-    for cid in callee_ids:
+    # Create callees with unique qualified_name and signature
+    for i, cid in enumerate(callee_ids):
         callee = Callable(
             id=cid,
             name=draw(simple_identifier),
-            qualified_name=draw(simple_qualified_name),
+            qualified_name=f"{base_qname}.callee{i}",
             kind=CallableKind.METHOD,
             language_type=language,
-            signature=draw(simple_signature),
+            signature=f"callee{i}()",
             is_static=False,
             visibility=Visibility.PUBLIC,
             return_type=None,
@@ -129,6 +130,7 @@ def call_chain_ir(draw: st.DrawFn) -> IR:
 @settings(
     max_examples=100,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
+    deadline=500,  # Allow up to 500ms for Neo4j operations
 )
 def test_pagination_consistency(ir: IR, neo4j_connection: Neo4jConnection) -> None:
     """

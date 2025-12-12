@@ -18,7 +18,7 @@ synapse query calls <callable-id>
 
 ## Configuration
 
-Synapse uses environment variables with the `SYNAPSE_` prefix:
+Synapse uses environment variables with the `SYNAPSE_` prefix. For backward compatibility, Neo4j variables also support unprefixed names (e.g., `NEO4J_URI`), with `SYNAPSE_` prefix taking precedence.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -28,5 +28,6 @@ Synapse uses environment variables with the `SYNAPSE_` prefix:
 | `SYNAPSE_NEO4J_DATABASE` | `neo4j` | Neo4j database name |
 | `SYNAPSE_DEFAULT_PAGE_SIZE` | `100` | Default pagination size |
 | `SYNAPSE_DEFAULT_MAX_DEPTH` | `5` | Max depth for graph traversals |
+| `SYNAPSE_BATCH_WRITE_SIZE` | `1000` | Batch size for bulk write operations |
 
 You can also use a `.env` file in the project root.

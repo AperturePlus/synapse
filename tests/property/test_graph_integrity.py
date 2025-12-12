@@ -74,10 +74,8 @@ def nested_modules_ir(draw: st.DrawFn) -> IR:
 
     # Create parent module
     parent_id = f"mod_parent_{draw(st.integers(min_value=1, max_value=999))}"
-    child_ids = [
-        f"mod_child_{i}_{draw(st.integers(min_value=1, max_value=999))}"
-        for i in range(draw(st.integers(min_value=1, max_value=3)))
-    ]
+    num_children = draw(st.integers(min_value=1, max_value=3))
+    child_ids = [f"mod_child_{i}_{draw(st.integers(min_value=1, max_value=999))}" for i in range(num_children)]
 
     parent = Module(
         id=parent_id,
@@ -89,18 +87,21 @@ def nested_modules_ir(draw: st.DrawFn) -> IR:
         declared_types=[],
     )
 
-    children = [
-        Module(
-            id=cid,
-            name=draw(simple_identifier),
-            qualified_name=f"{parent.qualified_name}.{draw(simple_identifier)}",
-            path=f"{parent.path}/{draw(simple_identifier)}",
-            language_type=language,
-            sub_modules=[],
-            declared_types=[],
+    # Generate unique child names to avoid duplicate qualified_name
+    children = []
+    for i, cid in enumerate(child_ids):
+        child_name = f"{draw(simple_identifier)}{i}"  # Add index to ensure uniqueness
+        children.append(
+            Module(
+                id=cid,
+                name=child_name,
+                qualified_name=f"{parent.qualified_name}.{child_name}",
+                path=f"{parent.path}/{child_name}",
+                language_type=language,
+                sub_modules=[],
+                declared_types=[],
+            )
         )
-        for cid in child_ids
-    ]
 
     modules = {parent.id: parent}
     for child in children:
@@ -174,12 +175,17 @@ def types_with_relationships_ir(draw: st.DrawFn) -> IR:
     """Generate IR with type inheritance/implementation/embedding relationships."""
     language = draw(st.sampled_from(list(LanguageType)))
 
+    # Generate unique qualified names for each type
+    base_qname = draw(simple_qualified_name)
+    interface_qname = f"{base_qname}.Interface"
+    derived_qname = f"{base_qname}.Derived"
+
     # Create base type
     base_id = f"type_base_{draw(st.integers(min_value=1, max_value=999))}"
     base_type = Type(
         id=base_id,
         name=draw(simple_identifier),
-        qualified_name=draw(simple_qualified_name),
+        qualified_name=base_qname,
         kind=TypeKind.CLASS if language == LanguageType.JAVA else TypeKind.STRUCT,
         language_type=language,
         modifiers=[],
@@ -194,7 +200,7 @@ def types_with_relationships_ir(draw: st.DrawFn) -> IR:
     interface_type = Type(
         id=interface_id,
         name=draw(simple_identifier),
-        qualified_name=draw(simple_qualified_name),
+        qualified_name=interface_qname,
         kind=TypeKind.INTERFACE if language == LanguageType.JAVA else TypeKind.STRUCT,
         language_type=language,
         modifiers=[],
@@ -209,7 +215,7 @@ def types_with_relationships_ir(draw: st.DrawFn) -> IR:
     derived_type = Type(
         id=derived_id,
         name=draw(simple_identifier),
-        qualified_name=draw(simple_qualified_name),
+        qualified_name=derived_qname,
         kind=TypeKind.CLASS if language == LanguageType.JAVA else TypeKind.STRUCT,
         language_type=language,
         modifiers=[],
@@ -237,6 +243,7 @@ def types_with_relationships_ir(draw: st.DrawFn) -> IR:
 @settings(
     max_examples=100,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
+    deadline=500,  # Allow up to 500ms for Neo4j operations
 )
 def test_type_relationship_integrity(ir: IR, neo4j_connection: Neo4jConnection) -> None:
     """
@@ -328,22 +335,24 @@ def callables_with_calls_ir(draw: st.DrawFn) -> IR:
     """Generate IR with callable call relationships."""
     language = draw(st.sampled_from(list(LanguageType)))
 
+    # Generate base qualified name and signature
+    base_qname = draw(simple_qualified_name)
+    base_sig = draw(simple_signature)
+
     # Create caller callable
     caller_id = f"call_caller_{draw(st.integers(min_value=1, max_value=999))}"
     
-    # Create callee callables
-    callee_ids = [
-        f"call_callee_{i}_{draw(st.integers(min_value=1, max_value=999))}"
-        for i in range(draw(st.integers(min_value=1, max_value=3)))
-    ]
+    # Create callee callables with unique qualified_name and signature
+    num_callees = draw(st.integers(min_value=1, max_value=3))
+    callee_ids = [f"call_callee_{i}_{draw(st.integers(min_value=1, max_value=999))}" for i in range(num_callees)]
 
     caller = Callable(
         id=caller_id,
         name=draw(simple_identifier),
-        qualified_name=draw(simple_qualified_name),
+        qualified_name=base_qname,
         kind=draw(st.sampled_from(list(CallableKind))),
         language_type=language,
-        signature=draw(simple_signature),
+        signature=base_sig,
         is_static=draw(st.booleans()),
         visibility=draw(st.sampled_from(list(Visibility))),
         return_type=None,
@@ -351,22 +360,24 @@ def callables_with_calls_ir(draw: st.DrawFn) -> IR:
         overrides=None,
     )
 
-    callees = [
-        Callable(
-            id=cid,
-            name=draw(simple_identifier),
-            qualified_name=draw(simple_qualified_name),
-            kind=draw(st.sampled_from(list(CallableKind))),
-            language_type=language,
-            signature=draw(simple_signature),
-            is_static=draw(st.booleans()),
-            visibility=draw(st.sampled_from(list(Visibility))),
-            return_type=None,
-            calls=[],
-            overrides=None,
+    callees = []
+    for i, cid in enumerate(callee_ids):
+        # Make each callee unique by appending index to qualified_name
+        callees.append(
+            Callable(
+                id=cid,
+                name=draw(simple_identifier),
+                qualified_name=f"{base_qname}.callee{i}",
+                kind=draw(st.sampled_from(list(CallableKind))),
+                language_type=language,
+                signature=f"callee{i}()",
+                is_static=draw(st.booleans()),
+                visibility=draw(st.sampled_from(list(Visibility))),
+                return_type=None,
+                calls=[],
+                overrides=None,
+            )
         )
-        for cid in callee_ids
-    ]
 
     callables = {caller.id: caller}
     for callee in callees:

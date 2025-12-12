@@ -34,21 +34,27 @@ class Neo4jConfig:
     def from_env(cls) -> Neo4jConfig:
         """Create configuration from environment variables.
 
-        Environment variables:
-            NEO4J_URI: Database URI (default: bolt://localhost:7687)
-            NEO4J_USERNAME: Username (default: neo4j)
-            NEO4J_PASSWORD: Password (default: neo4j)
-            NEO4J_DATABASE: Database name (default: neo4j)
-            NEO4J_MAX_POOL_SIZE: Max connection pool size (default: 50)
-            NEO4J_CONNECTION_TIMEOUT: Connection timeout in seconds (default: 30)
+        Environment variables (with SYNAPSE_ prefix or without):
+            SYNAPSE_NEO4J_URI or NEO4J_URI: Database URI (default: bolt://localhost:7687)
+            SYNAPSE_NEO4J_USERNAME or NEO4J_USERNAME: Username (default: neo4j)
+            SYNAPSE_NEO4J_PASSWORD or NEO4J_PASSWORD: Password (default: neo4j)
+            SYNAPSE_NEO4J_DATABASE or NEO4J_DATABASE: Database name (default: neo4j)
+            SYNAPSE_NEO4J_MAX_CONNECTION_POOL_SIZE or NEO4J_MAX_POOL_SIZE: Max pool size (default: 50)
+            SYNAPSE_NEO4J_CONNECTION_TIMEOUT or NEO4J_CONNECTION_TIMEOUT: Timeout in seconds (default: 30)
         """
         return cls(
-            uri=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-            username=os.getenv("NEO4J_USERNAME", "neo4j"),
-            password=os.getenv("NEO4J_PASSWORD", "neo4j"),
-            database=os.getenv("NEO4J_DATABASE", "neo4j"),
-            max_connection_pool_size=int(os.getenv("NEO4J_MAX_POOL_SIZE", "50")),
-            connection_timeout=float(os.getenv("NEO4J_CONNECTION_TIMEOUT", "30")),
+            uri=os.getenv("SYNAPSE_NEO4J_URI") or os.getenv("NEO4J_URI", "bolt://localhost:7687"),
+            username=os.getenv("SYNAPSE_NEO4J_USERNAME") or os.getenv("NEO4J_USERNAME", "neo4j"),
+            password=os.getenv("SYNAPSE_NEO4J_PASSWORD") or os.getenv("NEO4J_PASSWORD", "neo4j"),
+            database=os.getenv("SYNAPSE_NEO4J_DATABASE") or os.getenv("NEO4J_DATABASE", "neo4j"),
+            max_connection_pool_size=int(
+                os.getenv("SYNAPSE_NEO4J_MAX_CONNECTION_POOL_SIZE")
+                or os.getenv("NEO4J_MAX_POOL_SIZE", "50")
+            ),
+            connection_timeout=float(
+                os.getenv("SYNAPSE_NEO4J_CONNECTION_TIMEOUT")
+                or os.getenv("NEO4J_CONNECTION_TIMEOUT", "30")
+            ),
         )
 
 

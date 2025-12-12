@@ -11,8 +11,12 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Create main app and sub-apps
 app = typer.Typer(

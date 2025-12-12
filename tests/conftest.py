@@ -1,7 +1,13 @@
 """Shared pytest fixtures for Synapse tests."""
 
+import os
+
 import pytest
+from dotenv import load_dotenv
 from hypothesis import settings
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure hypothesis for property-based testing
 settings.register_profile("ci", max_examples=100)

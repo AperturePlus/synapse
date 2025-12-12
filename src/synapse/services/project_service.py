@@ -115,6 +115,9 @@ class ProjectService:
             )
             record = result.single()
 
+        if not record:
+            raise RuntimeError(f"Failed to create project: {name} at {path}")
+
         project = Project(
             id=record["id"],
             name=record["name"],
@@ -238,4 +241,7 @@ class ProjectService:
             )
             record = result.single()
 
-        return record is not None and record["deleted"] > 0
+        if not record:
+            return False
+
+        return record["deleted"] > 0

@@ -115,18 +115,35 @@ def ir_strategy(draw: st.DrawFn) -> IR:
     """Generate a valid IR structure for idempotency testing."""
     language = draw(st.sampled_from(list(LanguageType)))
 
-    # Generate small collections for efficiency
-    modules_list = draw(st.lists(module_strategy(), min_size=1, max_size=3))
-    types_list = draw(st.lists(type_strategy(), min_size=0, max_size=3))
-    callables_list = draw(st.lists(callable_strategy(), min_size=0, max_size=3))
+    # Generate base qualified name to ensure uniqueness
+    base_qname = draw(simple_qualified_name)
 
-    # Ensure consistent language type
-    for m in modules_list:
+    # Generate small collections for efficiency with unique qualified names
+    num_modules = draw(st.integers(min_value=1, max_value=3))
+    num_types = draw(st.integers(min_value=0, max_value=3))
+    num_callables = draw(st.integers(min_value=0, max_value=3))
+
+    modules_list = []
+    for i in range(num_modules):
+        m = draw(module_strategy())
         m.language_type = language
-    for t in types_list:
+        m.qualified_name = f"{base_qname}.mod{i}"
+        modules_list.append(m)
+
+    types_list = []
+    for i in range(num_types):
+        t = draw(type_strategy())
         t.language_type = language
-    for c in callables_list:
+        t.qualified_name = f"{base_qname}.type{i}"
+        types_list.append(t)
+
+    callables_list = []
+    for i in range(num_callables):
+        c = draw(callable_strategy())
         c.language_type = language
+        c.qualified_name = f"{base_qname}.call{i}"
+        c.signature = f"call{i}()"
+        callables_list.append(c)
 
     return IR(
         version="1.0",

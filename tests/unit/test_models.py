@@ -3,13 +3,13 @@
 import pytest
 from pydantic import ValidationError
 
+from synapse.adapters.base import SymbolTable
 from synapse.core.models import (
     Callable,
     CallableKind,
     IR,
     LanguageType,
     Module,
-    SymbolTable,
     Type,
     TypeKind,
     UnresolvedReference,

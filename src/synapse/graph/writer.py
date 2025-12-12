@@ -94,7 +94,11 @@ class GraphWriter:
         Args:
             connection: Neo4j connection instance.
         """
+        from synapse.core.config import get_config
+
         self._connection = connection
+        self._config = get_config()
+        self._batch_size = self._config.batch_write_size
 
     def write_ir(self, ir: IR, project_id: str) -> WriteResult:
         """Write IR data to the graph database.
@@ -124,7 +128,7 @@ class GraphWriter:
         return result
 
     def _write_modules(self, ir: IR, project_id: str) -> int:
-        """Write Module nodes using UNWIND batch."""
+        """Write Module nodes using UNWIND batch with chunking."""
         if not ir.modules:
             return 0
 
@@ -150,13 +154,11 @@ class GraphWriter:
             mod.projectId = m.projectId
         """
 
-        with self._connection.session() as session:
-            session.run(query, {"modules": modules_data})
-
+        self._write_in_chunks(query, modules_data, "modules")
         return len(modules_data)
 
     def _write_types(self, ir: IR, project_id: str) -> int:
-        """Write Type nodes using UNWIND batch."""
+        """Write Type nodes using UNWIND batch with chunking."""
         if not ir.types:
             return 0
 
@@ -184,13 +186,11 @@ class GraphWriter:
             typ.projectId = t.projectId
         """
 
-        with self._connection.session() as session:
-            session.run(query, {"types": types_data})
-
+        self._write_in_chunks(query, types_data, "types")
         return len(types_data)
 
     def _write_callables(self, ir: IR, project_id: str) -> int:
-        """Write Callable nodes using UNWIND batch."""
+        """Write Callable nodes using UNWIND batch with chunking."""
         if not ir.callables:
             return 0
 
@@ -222,9 +222,7 @@ class GraphWriter:
             cal.projectId = c.projectId
         """
 
-        with self._connection.session() as session:
-            session.run(query, {"callables": callables_data})
-
+        self._write_in_chunks(query, callables_data, "callables")
         return len(callables_data)
 
 
@@ -382,7 +380,7 @@ class GraphWriter:
         source_label: str,
         target_label: str,
     ) -> int:
-        """Write relationships in batch using UNWIND.
+        """Write relationships in batch using UNWIND with chunking.
 
         Args:
             pairs: List of (source_id, target_id) tuples.
@@ -412,10 +410,23 @@ class GraphWriter:
         MATCH (t:{target_label} {{id: r.t}})
         MERGE (s)-[rel:{rel_type}]->(t)
         """
-        with self._connection.session() as session:
-            session.run(query, {"rels": data})
-
+        self._write_in_chunks(query, data, "rels")
         return len(pairs)
+
+    def _write_in_chunks(
+        self, query: str, data: list[dict], param_name: str
+    ) -> None:
+        """Write data in chunks to avoid oversized requests.
+
+        Args:
+            query: Cypher query with UNWIND.
+            data: List of data items to write.
+            param_name: Parameter name in the query.
+        """
+        with self._connection.session() as session:
+            for i in range(0, len(data), self._batch_size):
+                chunk = data[i : i + self._batch_size]
+                session.run(query, {param_name: chunk})
 
     def clear_project(self, project_id: str) -> int:
         """Clear all data for a project.
