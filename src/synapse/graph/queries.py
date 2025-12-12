@@ -98,37 +98,49 @@ class QueryService:
     Provides high-level query methods with pagination support.
     """
 
-    DEFAULT_PAGE_SIZE = 100
-    DEFAULT_MAX_DEPTH = 5
-
     def __init__(self, connection: Neo4jConnection) -> None:
         """Initialize query service.
 
         Args:
             connection: Neo4j connection instance.
         """
+        from synapse.core.config import get_config
+
         self._connection = connection
+        self._config = get_config()
+
+    @property
+    def default_page_size(self) -> int:
+        """Get default page size from config."""
+        return self._config.default_page_size
+
+    @property
+    def default_max_depth(self) -> int:
+        """Get default max depth from config."""
+        return self._config.default_max_depth
 
     def get_call_chain(
         self,
         callable_id: str,
         direction: Literal["callers", "callees", "both"] = "both",
-        max_depth: int = DEFAULT_MAX_DEPTH,
+        max_depth: int | None = None,
         page: int = 1,
-        page_size: int = DEFAULT_PAGE_SIZE,
+        page_size: int | None = None,
     ) -> CallChainResult:
         """Get call chain for a callable.
 
         Args:
             callable_id: ID of the callable to query.
             direction: Query direction - callers, callees, or both.
-            max_depth: Maximum traversal depth.
+            max_depth: Maximum traversal depth (uses config default if None).
             page: Page number (1-indexed).
-            page_size: Number of results per page.
+            page_size: Number of results per page (uses config default if None).
 
         Returns:
             CallChainResult with callers and/or callees.
         """
+        max_depth = max_depth or self.default_max_depth
+        page_size = page_size or self.default_page_size
         result = CallChainResult(root_id=callable_id)
         skip = (page - 1) * page_size
 
@@ -234,7 +246,7 @@ class QueryService:
         type_id: str,
         direction: Literal["ancestors", "descendants", "both"] = "both",
         page: int = 1,
-        page_size: int = DEFAULT_PAGE_SIZE,
+        page_size: int | None = None,
     ) -> TypeHierarchyResult:
         """Get type inheritance hierarchy.
 
@@ -242,11 +254,12 @@ class QueryService:
             type_id: ID of the type to query.
             direction: Query direction - ancestors, descendants, or both.
             page: Page number (1-indexed).
-            page_size: Number of results per page.
+            page_size: Number of results per page (uses config default if None).
 
         Returns:
             TypeHierarchyResult with ancestors and/or descendants.
         """
+        page_size = page_size or self.default_page_size
         result = TypeHierarchyResult(root_id=type_id)
         skip = (page - 1) * page_size
 
@@ -344,7 +357,7 @@ class QueryService:
         self,
         module_id: str,
         page: int = 1,
-        page_size: int = DEFAULT_PAGE_SIZE,
+        page_size: int | None = None,
     ) -> PaginatedResult:
         """Get direct dependencies of a module.
 
@@ -354,11 +367,12 @@ class QueryService:
         Args:
             module_id: ID of the module to query.
             page: Page number (1-indexed).
-            page_size: Number of results per page.
+            page_size: Number of results per page (uses config default if None).
 
         Returns:
             PaginatedResult containing ModuleDependency items.
         """
+        page_size = page_size or self.default_page_size
         skip = (page - 1) * page_size
 
         # Count query
@@ -421,17 +435,18 @@ class QueryService:
         )
 
     def get_all_callees_unpaginated(
-        self, callable_id: str, max_depth: int = DEFAULT_MAX_DEPTH
+        self, callable_id: str, max_depth: int | None = None
     ) -> list[CallableInfo]:
         """Get all callees without pagination (for testing).
 
         Args:
             callable_id: ID of the callable.
-            max_depth: Maximum traversal depth.
+            max_depth: Maximum traversal depth (uses config default if None).
 
         Returns:
             List of all callees.
         """
+        max_depth = max_depth or self.default_max_depth
         query = f"""
         MATCH path = (source:Callable {{id: $id}})-[:CALLS*1..{max_depth}]->(callee:Callable)
         WITH callee, min(length(path)) AS depth

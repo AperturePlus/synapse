@@ -64,3 +64,5 @@ neo4j/logs/
 # Docker
 .dockerignore
 .docker/
+
+.env

@@ -157,13 +157,16 @@ def generate_entity_id(
         signature: Optional method signature (for Callables)
 
     Returns:
-        A 16-character hex string ID
+        A hex string ID (length from config, default 16)
     """
+    from synapse.core.config import get_config
+
+    config = get_config()
     parts = [project_id, language_type.value, qualified_name]
     if signature:
         parts.append(signature)
     content = "|".join(parts)
-    return hashlib.sha256(content.encode()).hexdigest()[:16]
+    return hashlib.sha256(content.encode()).hexdigest()[: config.id_length]
 
 
 class LanguageAdapter(ABC):

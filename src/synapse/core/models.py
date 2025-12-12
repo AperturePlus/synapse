@@ -95,20 +95,6 @@ class Callable(Entity):
     overrides: str | None = Field(None, description="Overridden method ID")
 
 
-class SymbolTable(BaseModel):
-    """Symbol table for two-phase parsing.
-
-    Stores definition information for reference resolution.
-    """
-
-    type_map: dict[str, list[str]] = Field(
-        default_factory=dict, description="short_name -> [qualified_names]"
-    )
-    callable_map: dict[str, list[str]] = Field(
-        default_factory=dict, description="short_name -> [qualified_names]"
-    )
-
-
 class UnresolvedReference(BaseModel):
     """Unresolved reference from parsing.
 

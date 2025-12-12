@@ -6,6 +6,7 @@ enabling project registration, code scanning, querying, and export.
 
 from __future__ import annotations
 
+import traceback
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -31,6 +32,38 @@ app.add_typer(query_app, name="query")
 console = Console()
 err_console = Console(stderr=True)
 
+# Global verbose flag
+_verbose: bool = False
+
+
+def set_verbose(verbose: bool) -> None:
+    """Set global verbose mode."""
+    global _verbose
+    _verbose = verbose
+
+
+def is_verbose() -> bool:
+    """Check if verbose mode is enabled."""
+    return _verbose
+
+
+def print_exception(e: Exception) -> None:
+    """Print exception details in verbose mode."""
+    if _verbose:
+        err_console.print("\n[dim]--- Traceback (verbose mode) ---[/dim]")
+        err_console.print(f"[dim]{traceback.format_exc()}[/dim]")
+
+
+@app.callback()
+def main_callback(
+    verbose: Annotated[
+        bool,
+        typer.Option("--verbose", "-v", help="Enable verbose output with full tracebacks"),
+    ] = False,
+) -> None:
+    """Synapse CLI - Code topology modeling system."""
+    set_verbose(verbose)
+
 
 def get_connection():
     """Get Neo4j connection with error handling."""
@@ -43,6 +76,7 @@ def get_connection():
     except Neo4jConnError as e:
         err_console.print(f"[red]Error:[/red] Failed to connect to Neo4j: {e}")
         err_console.print("[yellow]Hint:[/yellow] Check NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD")
+        print_exception(e)
         raise typer.Exit(1)
 
 
@@ -87,6 +121,7 @@ def init(
             console.print(f"[yellow]![/yellow] Project already exists at this path")
             console.print(f"  ID: [cyan]{e.existing_project.id}[/cyan]")
             console.print(f"  Name: {e.existing_project.name}")
+            print_exception(e)
             raise typer.Exit(1)
     finally:
         conn.close()

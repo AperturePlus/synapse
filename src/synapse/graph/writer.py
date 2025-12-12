@@ -8,6 +8,7 @@ This module implements the GraphWriter with three-phase write logic:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,35 @@ from pydantic import BaseModel
 if TYPE_CHECKING:
     from synapse.core.models import IR
     from synapse.graph.connection import Neo4jConnection
+
+# Valid Neo4j labels and relationship types (alphanumeric + underscore)
+_VALID_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Allowed labels for nodes
+_ALLOWED_LABELS = frozenset({"Module", "Type", "Callable", "Project"})
+
+# Allowed relationship types
+_ALLOWED_REL_TYPES = frozenset({
+    "CONTAINS", "DECLARES", "EXTENDS", "IMPLEMENTS",
+    "EMBEDS", "CALLS", "OVERRIDES", "RETURNS",
+})
+
+
+def _validate_identifier(value: str, allowed: frozenset[str], kind: str) -> None:
+    """Validate a Cypher identifier against allowed values.
+
+    Args:
+        value: The identifier to validate.
+        allowed: Set of allowed values.
+        kind: Description for error message (e.g., "label", "relationship type").
+
+    Raises:
+        ValueError: If identifier is not in allowed set or has invalid format.
+    """
+    if value not in allowed:
+        raise ValueError(f"Invalid {kind}: {value!r}. Allowed: {sorted(allowed)}")
+    if not _VALID_IDENTIFIER_PATTERN.match(value):
+        raise ValueError(f"Invalid {kind} format: {value!r}")
 
 
 class DanglingReference(BaseModel):
@@ -231,7 +261,7 @@ class GraphWriter:
     def _write_relationships(
         self, ir: IR, project_id: str, valid_ids: set[str]
     ) -> tuple[int, list[DanglingReference]]:
-        """Write relationships and track dangling references.
+        """Write relationships and track dangling references using batch operations.
 
         Args:
             ir: IR data containing relationships.
@@ -241,153 +271,151 @@ class GraphWriter:
         Returns:
             Tuple of (relationships written, dangling references).
         """
-        relationships_written = 0
         dangling: list[DanglingReference] = []
 
-        # Module CONTAINS Module (sub-modules)
+        # Collect relationships by type for batch processing
+        rels: dict[tuple[str, str, str], list[tuple[str, str]]] = {
+            ("Module", "CONTAINS", "Module"): [],
+            ("Module", "DECLARES", "Type"): [],
+            ("Type", "EXTENDS", "Type"): [],
+            ("Type", "IMPLEMENTS", "Type"): [],
+            ("Type", "EMBEDS", "Type"): [],
+            ("Type", "CONTAINS", "Callable"): [],
+            ("Callable", "CALLS", "Callable"): [],
+            ("Callable", "OVERRIDES", "Callable"): [],
+            ("Callable", "RETURNS", "Type"): [],
+        }
+
+        # Module relationships
         for module in ir.modules.values():
             for sub_id in module.sub_modules:
                 if sub_id in valid_ids:
-                    self._write_relationship(module.id, sub_id, "CONTAINS", "Module", "Module")
-                    relationships_written += 1
+                    rels[("Module", "CONTAINS", "Module")].append((module.id, sub_id))
                 else:
                     dangling.append(DanglingReference(
-                        source_id=module.id,
-                        target_id=sub_id,
-                        relationship_type="CONTAINS",
-                        reason="Sub-module not found in graph",
+                        source_id=module.id, target_id=sub_id,
+                        relationship_type="CONTAINS", reason="Sub-module not found",
                     ))
-
-            # Module DECLARES Type
             for type_id in module.declared_types:
                 if type_id in valid_ids:
-                    self._write_relationship(module.id, type_id, "DECLARES", "Module", "Type")
-                    relationships_written += 1
+                    rels[("Module", "DECLARES", "Type")].append((module.id, type_id))
                 else:
                     dangling.append(DanglingReference(
-                        source_id=module.id,
-                        target_id=type_id,
-                        relationship_type="DECLARES",
-                        reason="Declared type not found in graph",
+                        source_id=module.id, target_id=type_id,
+                        relationship_type="DECLARES", reason="Declared type not found",
                     ))
 
         # Type relationships
         for typ in ir.types.values():
-            # Type EXTENDS Type
             for ext_id in typ.extends:
                 if ext_id in valid_ids:
-                    self._write_relationship(typ.id, ext_id, "EXTENDS", "Type", "Type")
-                    relationships_written += 1
+                    rels[("Type", "EXTENDS", "Type")].append((typ.id, ext_id))
                 else:
                     dangling.append(DanglingReference(
-                        source_id=typ.id,
-                        target_id=ext_id,
-                        relationship_type="EXTENDS",
-                        reason="Extended type not found in graph",
+                        source_id=typ.id, target_id=ext_id,
+                        relationship_type="EXTENDS", reason="Extended type not found",
                     ))
-
-            # Type IMPLEMENTS Type
             for impl_id in typ.implements:
                 if impl_id in valid_ids:
-                    self._write_relationship(typ.id, impl_id, "IMPLEMENTS", "Type", "Type")
-                    relationships_written += 1
+                    rels[("Type", "IMPLEMENTS", "Type")].append((typ.id, impl_id))
                 else:
                     dangling.append(DanglingReference(
-                        source_id=typ.id,
-                        target_id=impl_id,
-                        relationship_type="IMPLEMENTS",
-                        reason="Implemented interface not found in graph",
+                        source_id=typ.id, target_id=impl_id,
+                        relationship_type="IMPLEMENTS", reason="Implemented interface not found",
                     ))
-
-            # Type EMBEDS Type (Go)
             for embed_id in typ.embeds:
                 if embed_id in valid_ids:
-                    self._write_relationship(typ.id, embed_id, "EMBEDS", "Type", "Type")
-                    relationships_written += 1
+                    rels[("Type", "EMBEDS", "Type")].append((typ.id, embed_id))
                 else:
                     dangling.append(DanglingReference(
-                        source_id=typ.id,
-                        target_id=embed_id,
-                        relationship_type="EMBEDS",
-                        reason="Embedded type not found in graph",
+                        source_id=typ.id, target_id=embed_id,
+                        relationship_type="EMBEDS", reason="Embedded type not found",
                     ))
-
-            # Type CONTAINS Callable
             for callable_id in typ.callables:
                 if callable_id in valid_ids:
-                    self._write_relationship(typ.id, callable_id, "CONTAINS", "Type", "Callable")
-                    relationships_written += 1
+                    rels[("Type", "CONTAINS", "Callable")].append((typ.id, callable_id))
                 else:
                     dangling.append(DanglingReference(
-                        source_id=typ.id,
-                        target_id=callable_id,
-                        relationship_type="CONTAINS",
-                        reason="Callable not found in graph",
+                        source_id=typ.id, target_id=callable_id,
+                        relationship_type="CONTAINS", reason="Callable not found",
                     ))
 
         # Callable relationships
-        for callable in ir.callables.values():
-            # Callable CALLS Callable
-            for call_id in callable.calls:
+        for call in ir.callables.values():
+            for call_id in call.calls:
                 if call_id in valid_ids:
-                    self._write_relationship(callable.id, call_id, "CALLS", "Callable", "Callable")
-                    relationships_written += 1
+                    rels[("Callable", "CALLS", "Callable")].append((call.id, call_id))
                 else:
                     dangling.append(DanglingReference(
-                        source_id=callable.id,
-                        target_id=call_id,
-                        relationship_type="CALLS",
-                        reason="Called callable not found in graph",
+                        source_id=call.id, target_id=call_id,
+                        relationship_type="CALLS", reason="Called callable not found",
                     ))
+            if call.overrides and call.overrides in valid_ids:
+                rels[("Callable", "OVERRIDES", "Callable")].append((call.id, call.overrides))
+            elif call.overrides:
+                dangling.append(DanglingReference(
+                    source_id=call.id, target_id=call.overrides,
+                    relationship_type="OVERRIDES", reason="Overridden method not found",
+                ))
+            if call.return_type and call.return_type in valid_ids:
+                rels[("Callable", "RETURNS", "Type")].append((call.id, call.return_type))
+            elif call.return_type:
+                dangling.append(DanglingReference(
+                    source_id=call.id, target_id=call.return_type,
+                    relationship_type="RETURNS", reason="Return type not found",
+                ))
 
-            # Callable OVERRIDES Callable
-            if callable.overrides:
-                if callable.overrides in valid_ids:
-                    self._write_relationship(
-                        callable.id, callable.overrides, "OVERRIDES", "Callable", "Callable"
-                    )
-                    relationships_written += 1
-                else:
-                    dangling.append(DanglingReference(
-                        source_id=callable.id,
-                        target_id=callable.overrides,
-                        relationship_type="OVERRIDES",
-                        reason="Overridden method not found in graph",
-                    ))
+        # Batch write all relationships
+        total_written = 0
+        for (src_label, rel_type, tgt_label), pairs in rels.items():
+            if pairs:
+                total_written += self._write_relationships_batch(
+                    pairs, rel_type, src_label, tgt_label
+                )
 
-            # Callable RETURNS Type
-            if callable.return_type:
-                if callable.return_type in valid_ids:
-                    self._write_relationship(
-                        callable.id, callable.return_type, "RETURNS", "Callable", "Type"
-                    )
-                    relationships_written += 1
-                else:
-                    dangling.append(DanglingReference(
-                        source_id=callable.id,
-                        target_id=callable.return_type,
-                        relationship_type="RETURNS",
-                        reason="Return type not found in graph",
-                    ))
+        return total_written, dangling
 
-        return relationships_written, dangling
-
-    def _write_relationship(
+    def _write_relationships_batch(
         self,
-        source_id: str,
-        target_id: str,
+        pairs: list[tuple[str, str]],
         rel_type: str,
         source_label: str,
         target_label: str,
-    ) -> None:
-        """Write a single relationship using MERGE."""
+    ) -> int:
+        """Write relationships in batch using UNWIND.
+
+        Args:
+            pairs: List of (source_id, target_id) tuples.
+            rel_type: Relationship type (must be in _ALLOWED_REL_TYPES).
+            source_label: Source node label (must be in _ALLOWED_LABELS).
+            target_label: Target node label (must be in _ALLOWED_LABELS).
+
+        Returns:
+            Number of relationships written.
+
+        Raises:
+            ValueError: If labels or relationship type are not allowed.
+        """
+        if not pairs:
+            return 0
+
+        # Validate to prevent Cypher injection
+        _validate_identifier(source_label, _ALLOWED_LABELS, "label")
+        _validate_identifier(target_label, _ALLOWED_LABELS, "label")
+        _validate_identifier(rel_type, _ALLOWED_REL_TYPES, "relationship type")
+
+        data = [{"s": s, "t": t} for s, t in pairs]
+
         query = f"""
-        MATCH (s:{source_label} {{id: $sourceId}})
-        MATCH (t:{target_label} {{id: $targetId}})
-        MERGE (s)-[r:{rel_type}]->(t)
+        UNWIND $rels AS r
+        MATCH (s:{source_label} {{id: r.s}})
+        MATCH (t:{target_label} {{id: r.t}})
+        MERGE (s)-[rel:{rel_type}]->(t)
         """
         with self._connection.session() as session:
-            session.run(query, {"sourceId": source_id, "targetId": target_id})
+            session.run(query, {"rels": data})
+
+        return len(pairs)
 
     def clear_project(self, project_id: str) -> int:
         """Clear all data for a project.

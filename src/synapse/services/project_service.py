@@ -86,7 +86,10 @@ class ProjectService:
         # Generate unique ID and timestamp
         import hashlib
 
-        project_id = hashlib.sha256(path.encode()).hexdigest()[:16]
+        from synapse.core.config import get_config
+
+        config = get_config()
+        project_id = hashlib.sha256(path.encode()).hexdigest()[: config.id_length]
         created_at = datetime.now(timezone.utc)
 
         # Create project node
@@ -202,7 +205,9 @@ class ProjectService:
             ]
 
     def delete_project(self, project_id: str) -> bool:
-        """Delete a project and all its associated data.
+        """Delete a project and all its associated data atomically.
+
+        Uses a single transaction to ensure data consistency.
 
         Args:
             project_id: Project identifier.
@@ -215,24 +220,22 @@ class ProjectService:
         if not existing:
             return False
 
-        # Delete all nodes associated with this project
-        delete_data_query = """
-        MATCH (n {projectId: $projectId})
-        DETACH DELETE n
-        """
-
-        # Delete the project node itself
-        delete_project_query = """
+        # Single query to delete project and all associated data atomically
+        delete_query = """
         MATCH (p:Project {id: $id})
+        OPTIONAL MATCH (n {projectId: $projectId})
+        WITH p, collect(n) AS nodes
         DETACH DELETE p
-        RETURN count(p) AS deleted
+        WITH nodes
+        UNWIND nodes AS n
+        DETACH DELETE n
+        RETURN count(*) AS deleted
         """
 
         with self._connection.session() as session:
-            # Delete associated data first
-            session.run(delete_data_query, {"projectId": project_id})
-            # Then delete the project
-            result = session.run(delete_project_query, {"id": project_id})
+            result = session.run(
+                delete_query, {"id": project_id, "projectId": project_id}
+            )
             record = result.single()
 
-        return record["deleted"] > 0 if record else False
+        return record is not None and record["deleted"] > 0
