@@ -66,3 +66,5 @@ neo4j/logs/
 .docker/
 
 .env
+
+tests/fixtures

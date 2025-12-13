@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable as CallableFunc
+from typing import TYPE_CHECKING, Callable as CallableFunc
 
 from tree_sitter import Node, Parser
 
@@ -20,7 +20,61 @@ from synapse.core.models import (
     UnresolvedReference,
 )
 
+if TYPE_CHECKING:
+    from synapse.adapters.java.type_inferrer import TypeInferrer
+
 logger = logging.getLogger(__name__)
+
+
+class LocalScope:
+    """Tracks variable types within a method body.
+
+    Used during type inference to resolve variable references to their
+    declared types. Supports parameters, local variables, and nested scopes.
+    """
+
+    def __init__(self) -> None:
+        """Initialize an empty local scope."""
+        self._variables: dict[str, str] = {}
+
+    def add_parameter(self, name: str, type_name: str) -> None:
+        """Add a method parameter to scope.
+
+        Args:
+            name: The parameter name.
+            type_name: The declared type of the parameter.
+        """
+        self._variables[name] = type_name
+
+    def add_variable(self, name: str, type_name: str) -> None:
+        """Add a local variable declaration to scope.
+
+        Args:
+            name: The variable name.
+            type_name: The declared type of the variable.
+        """
+        self._variables[name] = type_name
+
+    def get_type(self, name: str) -> str | None:
+        """Look up a variable's type by name.
+
+        Args:
+            name: The variable name to look up.
+
+        Returns:
+            The type name if found, None otherwise.
+        """
+        return self._variables.get(name)
+
+    def copy(self) -> LocalScope:
+        """Create a copy for nested scopes (blocks, lambdas).
+
+        Returns:
+            A new LocalScope with the same variable mappings.
+        """
+        new_scope = LocalScope()
+        new_scope._variables = self._variables.copy()
+        return new_scope
 
 
 class JavaResolver:
@@ -256,12 +310,19 @@ class JavaResolver:
                     return_type=return_type_id,
                 )
 
+                # Build local scope for type inference
+                local_scope = self._build_local_scope(child, content)
+
                 # Find method calls in body
                 method_body = child.child_by_field_name("body")
                 if method_body:
+                    # Collect local variables into scope
+                    self._collect_local_variables(
+                        method_body, content, local_scope, file_context, symbol_table
+                    )
                     self._find_method_calls(
                         method_body, content, file_context, symbol_table,
-                        callable_obj, ir
+                        callable_obj, ir, local_scope
                     )
 
                 ir.callables[callable_id] = callable_obj
@@ -270,45 +331,451 @@ class JavaResolver:
     def _find_method_calls(
         self, node: Node, content: bytes, file_context: FileContext,
         symbol_table: SymbolTable, caller: Callable, ir: IR,
+        local_scope: LocalScope | None = None,
     ) -> None:
-        """Find method invocations in a code block (heuristic linking)."""
+        """Find method invocations in a code block with type inference.
+
+        Args:
+            node: The AST node to search for method calls.
+            content: Source file content as bytes.
+            file_context: File context for type resolution.
+            symbol_table: Symbol table for callable lookups.
+            caller: The callable containing this code block.
+            ir: The IR being populated.
+            local_scope: Local scope for variable type lookups.
+        """
         if node.type == "method_invocation":
             name_node = node.child_by_field_name("name")
             if name_node:
                 method_name = JavaAstUtils.get_node_text(name_node, content)
 
-                # Try to resolve the method
-                resolved = symbol_table.resolve_callable(method_name)
+                # Infer signature with type information
+                inferred_sig = self._infer_signature(
+                    node, content, file_context, symbol_table, local_scope
+                )
+
+                # Use _match_callable for overload resolution
+                resolved, error_reason = self._match_callable(
+                    method_name, inferred_sig, symbol_table
+                )
+
                 if resolved:
-                    # Use first match (heuristic)
-                    callee_id = self._generate_id(
-                        resolved, self._infer_signature(node, content)
-                    )
+                    # Use the declared signature from symbol table for ID generation
+                    declared_sig = symbol_table.get_callable_signature(resolved)
+                    sig_for_id = declared_sig if declared_sig else inferred_sig
+                    callee_id = self._generate_id(resolved, sig_for_id)
                     if callee_id not in caller.calls:
                         caller.calls.append(callee_id)
                 else:
-                    # Record as unresolved
+                    # Record as unresolved with the specific reason
                     ir.unresolved.append(UnresolvedReference(
                         source_callable=caller.id,
                         target_name=method_name,
-                        reason="Method not found in symbol table",
+                        reason=error_reason or "Method not found in symbol table",
                     ))
 
         # Recurse into children
         for child in node.children:
             self._find_method_calls(
-                child, content, file_context, symbol_table, caller, ir
+                child, content, file_context, symbol_table, caller, ir, local_scope
             )
 
-    def _infer_signature(self, invocation_node: Node, content: bytes) -> str:
-        """Infer signature from method invocation arguments (simplified)."""
+    def _infer_signature(
+        self,
+        invocation_node: Node,
+        content: bytes,
+        file_context: FileContext | None = None,
+        symbol_table: SymbolTable | None = None,
+        local_scope: LocalScope | None = None,
+    ) -> str:
+        """Infer signature from method invocation arguments.
+
+        Uses TypeInferrer to determine the type of each argument expression,
+        producing a signature that can be matched against declared method
+        signatures for overload resolution.
+
+        Args:
+            invocation_node: The method_invocation AST node.
+            content: Source file content as bytes.
+            file_context: File context for type resolution (optional).
+            symbol_table: Symbol table for type lookups (optional).
+            local_scope: Local scope for variable lookups (optional).
+
+        Returns:
+            Signature string like "(String, int)" or "(?, ?)" for unresolved types.
+        """
         args_node = invocation_node.child_by_field_name("arguments")
         if args_node is None:
             return "()"
 
-        # Count arguments (simplified - doesn't infer types)
-        arg_count = sum(
-            1 for c in args_node.children
+        # Collect argument nodes (skip parentheses and commas)
+        arg_nodes = [
+            c for c in args_node.children
             if c.type not in ("(", ")", ",")
-        )
-        return f"({', '.join(['?'] * arg_count)})"
+        ]
+
+        if not arg_nodes:
+            return "()"
+
+        # If we don't have the context for type inference, fall back to placeholders
+        if file_context is None or symbol_table is None or local_scope is None:
+            return f"({', '.join(['?'] * len(arg_nodes))})"
+
+        # Import here to avoid circular dependency
+        from synapse.adapters.java.type_inferrer import TypeInferrer
+
+        inferrer = TypeInferrer(symbol_table, file_context, local_scope)
+
+        # Infer type for each argument
+        arg_types: list[str] = []
+        for arg_node in arg_nodes:
+            inferred_type = inferrer.infer_type(arg_node, content)
+            if inferred_type is not None:
+                arg_types.append(inferred_type)
+            else:
+                arg_types.append("?")
+
+        return f"({', '.join(arg_types)})"
+
+    def _build_local_scope(
+        self, callable_node: Node, content: bytes
+    ) -> LocalScope:
+        """Build local scope from method parameters.
+
+        Extracts parameter names and types from a method or constructor
+        declaration to initialize the local scope for type inference.
+
+        Args:
+            callable_node: The method or constructor declaration node.
+            content: Source file content as bytes.
+
+        Returns:
+            A LocalScope populated with parameter types.
+        """
+        scope = LocalScope()
+
+        params_node = callable_node.child_by_field_name("parameters")
+        if params_node is None:
+            return scope
+
+        for child in params_node.children:
+            if child.type == "formal_parameter":
+                # Get parameter name
+                name_node = child.child_by_field_name("name")
+                type_node = child.child_by_field_name("type")
+
+                if name_node and type_node:
+                    param_name = JavaAstUtils.get_node_text(name_node, content)
+                    param_type = JavaAstUtils.get_type_name(type_node, content)
+                    scope.add_parameter(param_name, param_type)
+
+            elif child.type == "spread_parameter":
+                # Varargs parameter
+                name_node = child.child_by_field_name("name")
+                type_node = child.child_by_field_name("type")
+
+                if name_node and type_node:
+                    param_name = JavaAstUtils.get_node_text(name_node, content)
+                    # Varargs are arrays at runtime
+                    param_type = JavaAstUtils.get_type_name(type_node, content) + "[]"
+                    scope.add_parameter(param_name, param_type)
+
+        return scope
+
+    def _collect_local_variables(
+        self,
+        body_node: Node,
+        content: bytes,
+        scope: LocalScope,
+        file_context: FileContext,
+        symbol_table: SymbolTable,
+    ) -> None:
+        """Collect local variable declarations into scope.
+
+        Traverses the method body to find local variable declarations
+        and adds them to the scope. Handles the `var` keyword by
+        inferring the type from the initializer expression.
+
+        Args:
+            body_node: The method body node to traverse.
+            content: Source file content as bytes.
+            scope: The LocalScope to populate.
+            file_context: File context for type resolution.
+            symbol_table: Symbol table for type lookups.
+        """
+        if body_node is None:
+            return
+
+        for child in body_node.children:
+            if child.type == "local_variable_declaration":
+                self._process_local_variable_declaration(
+                    child, content, scope, file_context, symbol_table
+                )
+            elif child.type in (
+                "block",
+                "if_statement",
+                "for_statement",
+                "enhanced_for_statement",
+                "while_statement",
+                "do_statement",
+                "try_statement",
+                "switch_expression",
+            ):
+                # Recurse into nested blocks
+                self._collect_local_variables(
+                    child, content, scope, file_context, symbol_table
+                )
+
+            # Handle for loop initializers
+            if child.type == "for_statement":
+                init_node = child.child_by_field_name("init")
+                if init_node and init_node.type == "local_variable_declaration":
+                    self._process_local_variable_declaration(
+                        init_node, content, scope, file_context, symbol_table
+                    )
+
+            # Handle enhanced for loop variable
+            if child.type == "enhanced_for_statement":
+                name_node = child.child_by_field_name("name")
+                type_node = child.child_by_field_name("type")
+                if name_node and type_node:
+                    var_name = JavaAstUtils.get_node_text(name_node, content)
+                    var_type = JavaAstUtils.get_type_name(type_node, content)
+                    scope.add_variable(var_name, var_type)
+
+            # Handle try-with-resources
+            if child.type == "try_statement":
+                resources_node = child.child_by_field_name("resources")
+                if resources_node:
+                    for resource in resources_node.children:
+                        if resource.type == "resource":
+                            name_node = resource.child_by_field_name("name")
+                            type_node = resource.child_by_field_name("type")
+                            if name_node and type_node:
+                                var_name = JavaAstUtils.get_node_text(name_node, content)
+                                var_type = JavaAstUtils.get_type_name(type_node, content)
+                                scope.add_variable(var_name, var_type)
+
+            # Handle catch clauses
+            if child.type == "catch_clause":
+                catch_param = child.child_by_field_name("parameter")
+                if catch_param:
+                    name_node = catch_param.child_by_field_name("name")
+                    type_node = catch_param.child_by_field_name("type")
+                    if name_node and type_node:
+                        var_name = JavaAstUtils.get_node_text(name_node, content)
+                        var_type = JavaAstUtils.get_type_name(type_node, content)
+                        scope.add_variable(var_name, var_type)
+
+    def _process_local_variable_declaration(
+        self,
+        decl_node: Node,
+        content: bytes,
+        scope: LocalScope,
+        file_context: FileContext,
+        symbol_table: SymbolTable,
+    ) -> None:
+        """Process a local variable declaration and add to scope.
+
+        Handles both explicit type declarations and `var` keyword (Java 10+)
+        by inferring the type from the initializer.
+
+        Args:
+            decl_node: The local_variable_declaration node.
+            content: Source file content as bytes.
+            scope: The LocalScope to populate.
+            file_context: File context for type resolution.
+            symbol_table: Symbol table for type lookups.
+        """
+        type_node = decl_node.child_by_field_name("type")
+
+        # Find variable declarators
+        for child in decl_node.children:
+            if child.type == "variable_declarator":
+                name_node = child.child_by_field_name("name")
+                value_node = child.child_by_field_name("value")
+
+                if name_node is None:
+                    continue
+
+                var_name = JavaAstUtils.get_node_text(name_node, content)
+
+                # Check if type is 'var' (Java 10+ local variable type inference)
+                if type_node:
+                    type_text = JavaAstUtils.get_node_text(type_node, content)
+
+                    if type_text == "var":
+                        # Infer type from initializer
+                        if value_node:
+                            inferred_type = self._infer_var_type(
+                                value_node, content, scope, file_context, symbol_table
+                            )
+                            if inferred_type:
+                                scope.add_variable(var_name, inferred_type)
+                    else:
+                        # Explicit type declaration
+                        var_type = JavaAstUtils.get_type_name(type_node, content)
+                        scope.add_variable(var_name, var_type)
+
+    def _infer_var_type(
+        self,
+        value_node: Node,
+        content: bytes,
+        scope: LocalScope,
+        file_context: FileContext,
+        symbol_table: SymbolTable,
+    ) -> str | None:
+        """Infer type for a `var` declaration from its initializer.
+
+        Args:
+            value_node: The initializer expression node.
+            content: Source file content as bytes.
+            scope: Current local scope for variable lookups.
+            file_context: File context for type resolution.
+            symbol_table: Symbol table for type lookups.
+
+        Returns:
+            The inferred type name, or None if inference fails.
+        """
+        # Import here to avoid circular dependency
+        from synapse.adapters.java.type_inferrer import TypeInferrer
+
+        inferrer = TypeInferrer(symbol_table, file_context, scope)
+        return inferrer.infer_type(value_node, content)
+
+    def _match_callable(
+        self,
+        method_name: str,
+        inferred_sig: str,
+        symbol_table: SymbolTable,
+    ) -> tuple[str | None, str | None]:
+        """Match inferred signature against callable candidates.
+
+        Attempts to find the best matching callable for a method invocation:
+        1. First attempts exact signature match
+        2. Falls back to arity-based matching for partial signatures (with ?)
+        3. Returns error reason for ambiguous matches
+
+        Args:
+            method_name: The simple name of the method being called.
+            inferred_sig: The inferred signature from arguments (e.g., "(String, int)").
+            symbol_table: Symbol table containing callable definitions.
+
+        Returns:
+            A tuple of (qualified_name, error_reason):
+            - (qualified_name, None) if a unique match is found
+            - (None, error_reason) if no match or ambiguous
+        """
+        candidates = symbol_table.callable_map.get(method_name, [])
+        if not candidates:
+            return None, "Method not found in symbol table"
+
+        # Parse the inferred signature to get argument types
+        inferred_types = self._parse_signature(inferred_sig)
+        inferred_arity = len(inferred_types)
+
+        # Check if signature contains placeholders
+        has_placeholders = "?" in inferred_types
+
+        # Collect candidates that match by exact signature or arity
+        exact_matches: list[str] = []
+        arity_matches: list[str] = []
+
+        for qualified_name in candidates:
+            # Get the declared signature for this callable
+            declared_sig = symbol_table.get_callable_signature(qualified_name)
+
+            if declared_sig is None:
+                # No signature info - can only match by name
+                arity_matches.append(qualified_name)
+                continue
+
+            declared_types = self._parse_signature(declared_sig)
+            declared_arity = len(declared_types)
+
+            # Check for exact signature match
+            if declared_sig == inferred_sig:
+                exact_matches.append(qualified_name)
+                continue
+
+            # Check arity match
+            if declared_arity != inferred_arity:
+                # Handle varargs: varargs can match any arity >= declared_arity - 1
+                if declared_types and declared_types[-1].endswith("..."):
+                    varargs_min_arity = declared_arity - 1
+                    if inferred_arity >= varargs_min_arity:
+                        arity_matches.append(qualified_name)
+                continue
+
+            # Arity matches - check if types are compatible
+            if has_placeholders:
+                # With placeholders, check if non-placeholder types match
+                if self._signatures_compatible(inferred_types, declared_types):
+                    arity_matches.append(qualified_name)
+            else:
+                # No placeholders but signatures don't match exactly
+                # This could be a subtype relationship - add to arity matches
+                arity_matches.append(qualified_name)
+
+        # Return exact match if unique
+        if len(exact_matches) == 1:
+            return exact_matches[0], None
+
+        # Multiple exact matches is ambiguous
+        if len(exact_matches) > 1:
+            return None, "Ambiguous overload"
+
+        # No exact matches - try arity matches
+        if len(arity_matches) == 1:
+            return arity_matches[0], None
+
+        if len(arity_matches) > 1:
+            return None, "Ambiguous overload"
+
+        # No matches at all
+        return None, "No callable matches the signature"
+
+    def _signatures_compatible(
+        self, inferred_types: list[str], declared_types: list[str]
+    ) -> bool:
+        """Check if inferred types are compatible with declared types.
+
+        Handles placeholder types (?) which match any declared type.
+
+        Args:
+            inferred_types: List of inferred argument types (may contain ?).
+            declared_types: List of declared parameter types.
+
+        Returns:
+            True if the signatures are compatible, False otherwise.
+        """
+        if len(inferred_types) != len(declared_types):
+            return False
+
+        for inferred, declared in zip(inferred_types, declared_types):
+            if inferred == "?":
+                # Placeholder matches anything
+                continue
+            if inferred != declared:
+                # Types don't match exactly
+                # Could add subtype checking here in the future
+                return False
+
+        return True
+
+    def _parse_signature(self, signature: str) -> list[str]:
+        """Parse a signature string into a list of type names.
+
+        Args:
+            signature: A signature string like "(String, int)" or "()".
+
+        Returns:
+            A list of type names, e.g., ["String", "int"] or [].
+        """
+        # Remove parentheses
+        inner = signature.strip("()")
+        if not inner:
+            return []
+
+        # Split by comma and strip whitespace
+        return [t.strip() for t in inner.split(",")]

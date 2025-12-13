@@ -146,7 +146,18 @@ class JavaAstUtils:
                 if type_node:
                     param_types.append(JavaAstUtils.get_type_name(type_node, content))
             elif child.type == "spread_parameter":
+                # spread_parameter doesn't have a 'type' field - type is a direct child
                 type_node = child.child_by_field_name("type")
+                if type_node is None:
+                    # Find type in children
+                    for subchild in child.children:
+                        if subchild.type in (
+                            "integral_type", "floating_point_type", "boolean_type",
+                            "type_identifier", "generic_type", "array_type",
+                            "scoped_type_identifier",
+                        ):
+                            type_node = subchild
+                            break
                 if type_node:
                     param_types.append(
                         JavaAstUtils.get_type_name(type_node, content) + "..."

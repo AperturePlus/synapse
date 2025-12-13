@@ -50,6 +50,15 @@ class SymbolTable(BaseModel):
     module_map: dict[str, str] = Field(
         default_factory=dict, description="qualified_name -> module_id"
     )
+    callable_return_types: dict[str, str] = Field(
+        default_factory=dict, description="qualified_callable_name -> return_type"
+    )
+    field_types: dict[str, dict[str, str]] = Field(
+        default_factory=dict, description="owner_type -> {field_name -> field_type}"
+    )
+    callable_signatures: dict[str, str] = Field(
+        default_factory=dict, description="qualified_callable_name -> signature"
+    )
 
     def add_type(self, short_name: str, qualified_name: str) -> None:
         """Register a type in the symbol table."""
@@ -58,12 +67,77 @@ class SymbolTable(BaseModel):
         if qualified_name not in self.type_map[short_name]:
             self.type_map[short_name].append(qualified_name)
 
-    def add_callable(self, short_name: str, qualified_name: str) -> None:
-        """Register a callable in the symbol table."""
+    def add_callable(
+        self,
+        short_name: str,
+        qualified_name: str,
+        return_type: str | None = None,
+        signature: str | None = None,
+    ) -> None:
+        """Register a callable in the symbol table.
+
+        Args:
+            short_name: The simple name of the callable.
+            qualified_name: The fully qualified name.
+            return_type: Optional return type name.
+            signature: Optional method signature (e.g., "(String, int)").
+        """
         if short_name not in self.callable_map:
             self.callable_map[short_name] = []
         if qualified_name not in self.callable_map[short_name]:
             self.callable_map[short_name].append(qualified_name)
+        if return_type:
+            self.callable_return_types[qualified_name] = return_type
+        if signature:
+            self.callable_signatures[qualified_name] = signature
+
+    def get_callable_return_type(self, qualified_name: str) -> str | None:
+        """Get the return type for a callable.
+
+        Args:
+            qualified_name: The fully qualified callable name.
+
+        Returns:
+            The return type name, or None if not known.
+        """
+        return self.callable_return_types.get(qualified_name)
+
+    def get_callable_signature(self, qualified_name: str) -> str | None:
+        """Get the signature for a callable.
+
+        Args:
+            qualified_name: The fully qualified callable name.
+
+        Returns:
+            The signature string (e.g., "(String, int)"), or None if not known.
+        """
+        return self.callable_signatures.get(qualified_name)
+
+    def add_field(self, owner_type: str, field_name: str, field_type: str) -> None:
+        """Register a field in the symbol table.
+
+        Args:
+            owner_type: The type that owns the field.
+            field_name: The name of the field.
+            field_type: The type of the field.
+        """
+        if owner_type not in self.field_types:
+            self.field_types[owner_type] = {}
+        self.field_types[owner_type][field_name] = field_type
+
+    def get_field_type(self, owner_type: str, field_name: str) -> str | None:
+        """Get the type of a field.
+
+        Args:
+            owner_type: The type that owns the field.
+            field_name: The name of the field.
+
+        Returns:
+            The field type name, or None if not known.
+        """
+        if owner_type in self.field_types:
+            return self.field_types[owner_type].get(field_name)
+        return None
 
     def resolve_type(self, short_name: str, context: FileContext) -> str | None:
         """Resolve a type's short name to its qualified name using file context.

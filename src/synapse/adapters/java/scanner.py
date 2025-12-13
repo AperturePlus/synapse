@@ -169,5 +169,14 @@ class JavaScanner:
                 signature = JavaAstUtils.build_signature(child, content)
                 qualified_name = f"{owner_qualified_name}.{name}"
 
-                # Register callable in symbol table
-                symbol_table.add_callable(name, qualified_name)
+                # Get return type for methods
+                return_type = None
+                if child.type == "method_declaration":
+                    return_type_node = child.child_by_field_name("type")
+                    if return_type_node and return_type_node.type != "void_type":
+                        return_type = JavaAstUtils.get_type_name(return_type_node, content)
+
+                # Register callable in symbol table with signature
+                symbol_table.add_callable(
+                    name, qualified_name, return_type=return_type, signature=signature
+                )

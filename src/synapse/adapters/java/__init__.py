@@ -5,5 +5,7 @@ into the unified Intermediate Representation (IR).
 """
 
 from synapse.adapters.java.adapter import JavaAdapter
+from synapse.adapters.java.resolver import JavaResolver, LocalScope
+from synapse.adapters.java.type_inferrer import TypeInferrer
 
-__all__ = ["JavaAdapter"]
+__all__ = ["JavaAdapter", "JavaResolver", "LocalScope", "TypeInferrer"]
