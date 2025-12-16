@@ -23,6 +23,8 @@ class Project(BaseModel):
     name: str = Field(..., description="Project name")
     path: str = Field(..., description="File system path")
     created_at: datetime = Field(..., description="Creation timestamp")
+    archived: bool = Field(default=False, description="Whether project is archived")
+    archived_at: datetime | None = Field(default=None, description="Archive timestamp")
 
 
 class ProjectExistsError(Exception):
@@ -39,6 +41,14 @@ class ProjectNotFoundError(Exception):
     def __init__(self, identifier: str) -> None:
         self.identifier = identifier
         super().__init__(f"Project not found: {identifier}")
+
+
+class ProjectNotArchivedError(Exception):
+    """Raised when attempting to purge a non-archived project."""
+
+    def __init__(self, project_id: str) -> None:
+        self.project_id = project_id
+        super().__init__(f"Project {project_id} is not archived")
 
 
 @dataclass
@@ -127,19 +137,31 @@ class ProjectService:
 
         return ProjectCreateResult(project=project, created=True)
 
-    def get_by_id(self, project_id: str) -> Project | None:
+    def get_by_id(
+        self, project_id: str, *, include_archived: bool = False
+    ) -> Project | None:
         """Get a project by its ID.
 
         Args:
             project_id: Project identifier.
+            include_archived: If True, include archived projects. Defaults to False.
 
         Returns:
             Project if found, None otherwise.
         """
-        query = """
-        MATCH (p:Project {id: $id})
-        RETURN p.id AS id, p.name AS name, p.path AS path, p.createdAt AS createdAt
-        """
+        if include_archived:
+            query = """
+            MATCH (p:Project {id: $id})
+            RETURN p.id AS id, p.name AS name, p.path AS path, p.createdAt AS createdAt,
+                   p.archived AS archived, p.archivedAt AS archivedAt
+            """
+        else:
+            query = """
+            MATCH (p:Project {id: $id})
+            WHERE p.archived IS NULL OR p.archived = false
+            RETURN p.id AS id, p.name AS name, p.path AS path, p.createdAt AS createdAt,
+                   p.archived AS archived, p.archivedAt AS archivedAt
+            """
 
         with self._connection.session() as session:
             result = session.run(query, {"id": project_id})
@@ -153,21 +175,37 @@ class ProjectService:
             name=record["name"],
             path=record["path"],
             created_at=datetime.fromisoformat(record["createdAt"]),
+            archived=record["archived"] or False,
+            archived_at=(
+                datetime.fromisoformat(record["archivedAt"])
+                if record["archivedAt"]
+                else None
+            ),
         )
 
-    def get_by_path(self, path: str) -> Project | None:
+    def get_by_path(self, path: str, *, include_archived: bool = False) -> Project | None:
         """Get a project by its file system path.
 
         Args:
             path: File system path.
+            include_archived: If True, include archived projects. Defaults to False.
 
         Returns:
             Project if found, None otherwise.
         """
-        query = """
-        MATCH (p:Project {path: $path})
-        RETURN p.id AS id, p.name AS name, p.path AS path, p.createdAt AS createdAt
-        """
+        if include_archived:
+            query = """
+            MATCH (p:Project {path: $path})
+            RETURN p.id AS id, p.name AS name, p.path AS path, p.createdAt AS createdAt,
+                   p.archived AS archived, p.archivedAt AS archivedAt
+            """
+        else:
+            query = """
+            MATCH (p:Project {path: $path})
+            WHERE p.archived IS NULL OR p.archived = false
+            RETURN p.id AS id, p.name AS name, p.path AS path, p.createdAt AS createdAt,
+                   p.archived AS archived, p.archivedAt AS archivedAt
+            """
 
         with self._connection.session() as session:
             result = session.run(query, {"path": path})
@@ -181,19 +219,38 @@ class ProjectService:
             name=record["name"],
             path=record["path"],
             created_at=datetime.fromisoformat(record["createdAt"]),
+            archived=record["archived"] or False,
+            archived_at=(
+                datetime.fromisoformat(record["archivedAt"])
+                if record["archivedAt"]
+                else None
+            ),
         )
 
-    def list_projects(self) -> list[Project]:
+    def list_projects(self, *, include_archived: bool = False) -> list[Project]:
         """List all registered projects.
 
+        Args:
+            include_archived: If True, include archived projects. Defaults to False.
+
         Returns:
-            List of all projects.
+            List of all projects (excluding archived by default).
         """
-        query = """
-        MATCH (p:Project)
-        RETURN p.id AS id, p.name AS name, p.path AS path, p.createdAt AS createdAt
-        ORDER BY p.createdAt DESC
-        """
+        if include_archived:
+            query = """
+            MATCH (p:Project)
+            RETURN p.id AS id, p.name AS name, p.path AS path, p.createdAt AS createdAt,
+                   p.archived AS archived, p.archivedAt AS archivedAt
+            ORDER BY p.createdAt DESC
+            """
+        else:
+            query = """
+            MATCH (p:Project)
+            WHERE p.archived IS NULL OR p.archived = false
+            RETURN p.id AS id, p.name AS name, p.path AS path, p.createdAt AS createdAt,
+                   p.archived AS archived, p.archivedAt AS archivedAt
+            ORDER BY p.createdAt DESC
+            """
 
         with self._connection.session() as session:
             result = session.run(query)
@@ -203,45 +260,131 @@ class ProjectService:
                     name=record["name"],
                     path=record["path"],
                     created_at=datetime.fromisoformat(record["createdAt"]),
+                    archived=record["archived"] or False,
+                    archived_at=(
+                        datetime.fromisoformat(record["archivedAt"])
+                        if record["archivedAt"]
+                        else None
+                    ),
                 )
                 for record in result
             ]
 
     def delete_project(self, project_id: str) -> bool:
-        """Delete a project and all its associated data atomically.
+        """Archive a project (logical delete).
 
-        Uses a single transaction to ensure data consistency.
+        Sets the project's archived flag to true and records the archive timestamp.
+        This operation is idempotent - archiving an already archived project returns True.
 
         Args:
             project_id: Project identifier.
 
         Returns:
-            True if project was deleted, False if not found.
+            True if project was archived (or already archived), False if not found.
         """
-        # First check if project exists
-        existing = self.get_by_id(project_id)
-        if not existing:
-            return False
+        archived_at = datetime.now(timezone.utc)
 
-        # Single query to delete project and all associated data atomically
-        delete_query = """
+        # Archive the project - this is idempotent
+        archive_query = """
         MATCH (p:Project {id: $id})
-        OPTIONAL MATCH (n {projectId: $projectId})
-        WITH p, collect(n) AS nodes
-        DETACH DELETE p
-        WITH nodes
-        UNWIND nodes AS n
-        DETACH DELETE n
-        RETURN count(*) AS deleted
+        SET p.archived = true, p.archivedAt = $archivedAt
+        RETURN p.id AS id
         """
 
         with self._connection.session() as session:
             result = session.run(
-                delete_query, {"id": project_id, "projectId": project_id}
+                archive_query, {"id": project_id, "archivedAt": archived_at.isoformat()}
             )
             record = result.single()
 
-        if not record:
+        return record is not None
+
+    def restore_project(self, project_id: str) -> bool:
+        """Restore an archived project.
+
+        Sets the project's archived flag to false and clears the archive timestamp.
+
+        Args:
+            project_id: Project identifier.
+
+        Returns:
+            True if project was restored, False if not found or not archived.
+        """
+        # First check if the project exists and is archived
+        check_query = """
+        MATCH (p:Project {id: $id})
+        RETURN p.archived AS archived
+        """
+
+        with self._connection.session() as session:
+            result = session.run(check_query, {"id": project_id})
+            record = result.single()
+
+        # Project not found
+        if record is None:
             return False
 
-        return record["deleted"] > 0
+        # Project exists but is not archived
+        if not record["archived"]:
+            return False
+
+        # Restore the project
+        restore_query = """
+        MATCH (p:Project {id: $id})
+        WHERE p.archived = true
+        SET p.archived = false, p.archivedAt = null
+        RETURN p.id AS id
+        """
+
+        with self._connection.session() as session:
+            result = session.run(restore_query, {"id": project_id})
+            record = result.single()
+
+        return record is not None
+
+    def purge_project(self, project_id: str) -> bool:
+        """Permanently delete an archived project and all associated data.
+
+        This operation physically removes the project node and all related nodes
+        from the database. Only archived projects can be purged.
+
+        Args:
+            project_id: Project identifier.
+
+        Returns:
+            True if project was purged, False if not found.
+
+        Raises:
+            ProjectNotArchivedError: If the project exists but is not archived.
+        """
+        # First check if the project exists and its archived state
+        check_query = """
+        MATCH (p:Project {id: $id})
+        RETURN p.archived AS archived
+        """
+
+        with self._connection.session() as session:
+            result = session.run(check_query, {"id": project_id})
+            record = result.single()
+
+        # Project not found
+        if record is None:
+            return False
+
+        # Project exists but is not archived - raise error
+        if not record["archived"]:
+            raise ProjectNotArchivedError(project_id)
+
+        # Physically delete the project and all associated data
+        # DETACH DELETE removes the node and all its relationships
+        purge_query = """
+        MATCH (p:Project {id: $id})
+        DETACH DELETE p
+        RETURN count(p) AS deleted
+        """
+
+        with self._connection.session() as session:
+            result = session.run(purge_query, {"id": project_id})
+            record = result.single()
+
+        return record is not None and record["deleted"] > 0

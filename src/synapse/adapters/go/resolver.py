@@ -444,11 +444,17 @@ class GoResolver:
 
         Returns:
             IR with resolved references
+
+        Note:
+            Files are processed in sorted order to ensure deterministic results
+            regardless of filesystem traversal order (Requirement 5.3).
         """
         self._module_name = module_name
         ir = IR(language_type=self._language_type)
 
-        for go_file in source_path.rglob("*.go"):
+        # Sort files for deterministic processing order (Requirement 5.3)
+        go_files = sorted(source_path.rglob("*.go"))
+        for go_file in go_files:
             if go_file.name.endswith("_test.go"):
                 continue
             if "vendor" in go_file.parts:

@@ -138,6 +138,9 @@ class SymbolTable(BaseModel):
     ) -> str | None:
         """Get the return type for a callable.
 
+        Note: When falling back to find any return type for a qualified name,
+        keys are sorted to ensure deterministic results (Requirement 5.3).
+
         Args:
             qualified_name: The fully qualified callable name.
             signature: Optional signature for overloaded methods.
@@ -153,17 +156,20 @@ class SymbolTable(BaseModel):
         if qualified_name in self.callable_return_types:
             return self.callable_return_types[qualified_name]
         # Try to find any return type for this qualified name
+        # Sort keys for deterministic fallback order (Requirement 5.3)
         prefix = f"{qualified_name}#"
-        for key, value in self.callable_return_types.items():
-            if key.startswith(prefix):
-                return value
+        matching_keys = sorted(k for k in self.callable_return_types if k.startswith(prefix))
+        if matching_keys:
+            return self.callable_return_types[matching_keys[0]]
         return None
 
     def get_callable_signature(self, qualified_name: str) -> str | None:
         """Get the signature for a callable.
 
-        For overloaded methods, returns the first signature found.
+        For overloaded methods, returns the first signature found (in sorted key order).
         Use get_all_signatures_for_callable for all overloads.
+
+        Note: Keys are sorted to ensure deterministic results (Requirement 5.3).
 
         Args:
             qualified_name: The fully qualified callable name.
@@ -175,10 +181,11 @@ class SymbolTable(BaseModel):
         if qualified_name in self.callable_signatures:
             return self.callable_signatures[qualified_name]
         # Try to find any signature for this qualified name
+        # Sort keys for deterministic fallback order (Requirement 5.3)
         prefix = f"{qualified_name}#"
-        for key, value in self.callable_signatures.items():
-            if key.startswith(prefix):
-                return value
+        matching_keys = sorted(k for k in self.callable_signatures if k.startswith(prefix))
+        if matching_keys:
+            return self.callable_signatures[matching_keys[0]]
         return None
 
     def get_all_signatures_for_callable(self, qualified_name: str) -> list[str]:

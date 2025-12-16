@@ -35,6 +35,9 @@ class JavaScanner:
     def scan_directory(self, source_path: Path) -> SymbolTable:
         """Scan all Java files and build symbol table.
 
+        Files are processed in sorted order to ensure deterministic results
+        regardless of filesystem traversal order (Requirement 5.3).
+
         Args:
             source_path: Root directory of Java source code
 
@@ -43,7 +46,9 @@ class JavaScanner:
         """
         symbol_table = SymbolTable()
 
-        for java_file in source_path.rglob("*.java"):
+        # Sort files for deterministic processing order (Requirement 5.3)
+        java_files = sorted(source_path.rglob("*.java"))
+        for java_file in java_files:
             try:
                 self._scan_file_definitions(java_file, source_path, symbol_table)
             except Exception as e:

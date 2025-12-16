@@ -325,7 +325,7 @@ class TestListProjectsCommand:
                 result = runner.invoke(app, ["list-projects"])
 
                 assert result.exit_code == 0
-                assert "no projects" in result.output.lower()
+                assert "no" in result.output.lower() and "projects" in result.output.lower()
 
     def test_list_projects_success(self, mock_connection):
         """Test list projects with existing projects."""

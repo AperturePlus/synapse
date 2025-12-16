@@ -10,10 +10,10 @@ from synapse.graph.connection import (
 from synapse.graph.queries import (
     CallableInfo,
     CallChainResult,
+    GraphQueryExecutor,
     ModuleDependency,
     ModuleInfo,
     PaginatedResult,
-    QueryService,
     TypeHierarchyResult,
     TypeInfo,
 )
@@ -36,10 +36,10 @@ __all__ = [
     "get_connection",
     "CallableInfo",
     "CallChainResult",
+    "GraphQueryExecutor",
     "ModuleDependency",
     "ModuleInfo",
     "PaginatedResult",
-    "QueryService",
     "TypeHierarchyResult",
     "TypeInfo",
     "SchemaManager",

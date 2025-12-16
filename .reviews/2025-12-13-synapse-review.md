@@ -77,29 +77,6 @@
 
 ---
 
-### C3. 仓库可复现性/可运行性不足：关键测试夹具与锁文件被 `gitignore`
-
-**现象**
-
-- `.gitignore` 中包含 `tests/fixtures` 与 `uv.lock`，导致：
-  - 干净克隆后，`tests/integration`、`tests/property`（部分）和文档中的示例很可能缺少 fixture 而被跳过/失败；
-  - 依赖版本无法通过锁文件复现（文档与实际约定也容易漂移）。
-
-**影响**
-
-- CI/CD 与新环境无法稳定复现测试结果；对外发布时用户很难按文档复现 MVP。
-
-**涉及位置**
-
-- `.gitignore`
-- `tests/integration/test_go_adapter.py`、`tests/integration/test_java_adapter.py`、`tests/property/test_adapter_determinism.py`（均依赖 `tests/fixtures/*`）
-- `QUICKSTART.md`、`TESTING.md`（示例依赖 fixtures；且存在路径命名不一致，见后文）
-
-**建议**
-
-- 明确哪些 fixtures 是“发布/测试必须品”，将其纳入版本控制；若是“大文件/生成物”，则提供生成脚本并调整测试策略。
-- 明确是否需要追踪 `uv.lock`（通常建议追踪以保证可复现）。
-
 ## 高优先级问题（High）
 
 ### H1. 配置源重复且默认值冲突：`.env`、`core.config` 与 `graph.connection` 分裂

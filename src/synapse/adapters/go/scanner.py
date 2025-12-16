@@ -61,6 +61,9 @@ class GoScanner:
     def scan_directory(self, source_path: Path, module_name: str = "") -> SymbolTable:
         """Scan all Go files and build symbol table.
 
+        Files are processed in sorted order to ensure deterministic results
+        regardless of filesystem traversal order (Requirement 5.3).
+
         Args:
             source_path: Root directory of Go source code
             module_name: Module name from go.mod (optional)
@@ -71,7 +74,9 @@ class GoScanner:
         self._module_name = module_name or self.read_module_name(source_path)
         symbol_table = SymbolTable()
 
-        for go_file in source_path.rglob("*.go"):
+        # Sort files for deterministic processing order (Requirement 5.3)
+        go_files = sorted(source_path.rglob("*.go"))
+        for go_file in go_files:
             # Skip test files and vendor
             if go_file.name.endswith("_test.go"):
                 continue

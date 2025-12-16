@@ -92,14 +92,15 @@ class PaginatedResult:
     has_next: bool
 
 
-class QueryService:
-    """Service for querying the code topology graph.
+class GraphQueryExecutor:
+    """Executor for Neo4j graph queries.
 
-    Provides high-level query methods with pagination support.
+    Provides low-level query execution with Cypher for call chains,
+    type hierarchies, and module dependencies. Pagination supported.
     """
 
     def __init__(self, connection: Neo4jConnection) -> None:
-        """Initialize query service.
+        """Initialize query executor.
 
         Args:
             connection: Neo4j connection instance.

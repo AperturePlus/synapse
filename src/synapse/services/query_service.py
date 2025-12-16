@@ -12,10 +12,10 @@ from typing import TYPE_CHECKING, Literal
 from synapse.graph.queries import (
     CallableInfo,
     CallChainResult,
+    GraphQueryExecutor,
     ModuleDependency,
     ModuleInfo,
     PaginatedResult,
-    QueryService as GraphQueryService,
     TypeHierarchyResult,
     TypeInfo,
 )
@@ -72,7 +72,7 @@ class QueryService:
             connection: Neo4j connection instance.
         """
         self._connection = connection
-        self._graph_query = GraphQueryService(connection)
+        self._graph_query = GraphQueryExecutor(connection)
 
     def get_call_chain(
         self,

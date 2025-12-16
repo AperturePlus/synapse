@@ -94,21 +94,21 @@ class SchemaManager:
         This method is idempotent - it can be called multiple times safely.
 
         Returns:
-            SchemaResult with counts of created/existing items.
+            SchemaResult with counts of attempted/successful operations.
         """
-        constraints_created = 0
-        indexes_created = 0
         errors: list[str] = []
+
+        # Get existing schema before changes
+        existing_constraints = set(self._get_constraint_names())
+        existing_indexes = set(self._get_index_names())
 
         # Create constraints
         for constraint in CONSTRAINTS:
             try:
                 with self._connection.session() as session:
                     session.run(constraint.strip())
-                constraints_created += 1
             except Exception as e:
                 error_msg = str(e)
-                # Ignore "already exists" errors
                 if "already exists" not in error_msg.lower():
                     errors.append(f"Constraint error: {error_msg}")
 
@@ -117,18 +117,41 @@ class SchemaManager:
             try:
                 with self._connection.session() as session:
                     session.run(index.strip())
-                indexes_created += 1
             except Exception as e:
                 error_msg = str(e)
-                # Ignore "already exists" errors
                 if "already exists" not in error_msg.lower():
                     errors.append(f"Index error: {error_msg}")
 
+        # Get schema after changes to determine what was actually created
+        new_constraints = set(self._get_constraint_names())
+        new_indexes = set(self._get_index_names())
+
+        constraints_created = len(new_constraints - existing_constraints)
+        indexes_created = len(new_indexes - existing_indexes)
+
         return SchemaResult(
             constraints_created=constraints_created,
+            constraints_existing=len(existing_constraints),
             indexes_created=indexes_created,
+            indexes_existing=len(existing_indexes),
             errors=errors,
         )
+
+    def _get_constraint_names(self) -> list[str]:
+        """Get names of all existing constraints."""
+        with self._connection.session() as session:
+            result = session.run("SHOW CONSTRAINTS")
+            return [record["name"] for record in result]
+
+    def _get_index_names(self) -> list[str]:
+        """Get names of all existing indexes (excluding constraint-backing)."""
+        with self._connection.session() as session:
+            result = session.run("SHOW INDEXES")
+            return [
+                record["name"]
+                for record in result
+                if record.get("uniqueness") != "UNIQUE"
+            ]
 
     def drop_all_constraints(self) -> int:
         """Drop all constraints (for testing/reset).
@@ -137,18 +160,13 @@ class SchemaManager:
             Number of constraints dropped.
         """
         dropped = 0
-        with self._connection.session() as session:
-            result = session.run("SHOW CONSTRAINTS")
-            constraints = [record["name"] for record in result]
-
-        for name in constraints:
+        for name in self._get_constraint_names():
             try:
                 with self._connection.session() as session:
                     session.run(f"DROP CONSTRAINT {name} IF EXISTS")
                 dropped += 1
             except Exception:
                 pass
-
         return dropped
 
     def drop_all_indexes(self) -> int:
@@ -158,23 +176,13 @@ class SchemaManager:
             Number of indexes dropped.
         """
         dropped = 0
-        with self._connection.session() as session:
-            result = session.run("SHOW INDEXES")
-            # Filter out constraint-backing indexes
-            indexes = [
-                record["name"]
-                for record in result
-                if record.get("uniqueness") != "UNIQUE"
-            ]
-
-        for name in indexes:
+        for name in self._get_index_names():
             try:
                 with self._connection.session() as session:
                     session.run(f"DROP INDEX {name} IF EXISTS")
                 dropped += 1
             except Exception:
                 pass
-
         return dropped
 
     def get_schema_info(self) -> dict:
@@ -198,16 +206,28 @@ class SchemaManager:
 
 
 class SchemaResult:
-    """Result of schema initialization."""
+    """Result of schema initialization.
+
+    Attributes:
+        constraints_created: Number of constraints newly created in this run.
+        constraints_existing: Number of constraints that existed before this run.
+        indexes_created: Number of indexes newly created in this run.
+        indexes_existing: Number of indexes that existed before this run.
+        errors: List of error messages for failed operations.
+    """
 
     def __init__(
         self,
         constraints_created: int,
+        constraints_existing: int,
         indexes_created: int,
+        indexes_existing: int,
         errors: list[str] | None = None,
     ) -> None:
         self.constraints_created = constraints_created
+        self.constraints_existing = constraints_existing
         self.indexes_created = indexes_created
+        self.indexes_existing = indexes_existing
         self.errors = errors or []
 
     @property
@@ -215,10 +235,23 @@ class SchemaResult:
         """Check if schema initialization was successful."""
         return len(self.errors) == 0
 
+    @property
+    def constraints_total(self) -> int:
+        """Total constraints after this run."""
+        return self.constraints_existing + self.constraints_created
+
+    @property
+    def indexes_total(self) -> int:
+        """Total indexes after this run."""
+        return self.indexes_existing + self.indexes_created
+
     def __repr__(self) -> str:
         return (
-            f"SchemaResult(constraints={self.constraints_created}, "
-            f"indexes={self.indexes_created}, errors={len(self.errors)})"
+            f"SchemaResult(constraints_created={self.constraints_created}, "
+            f"constraints_existing={self.constraints_existing}, "
+            f"indexes_created={self.indexes_created}, "
+            f"indexes_existing={self.indexes_existing}, "
+            f"errors={len(self.errors)})"
         )
 
 

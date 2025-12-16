@@ -26,10 +26,10 @@ from synapse.core import (
     Visibility,
 )
 from synapse.graph import (
+    GraphQueryExecutor,
     GraphWriter,
     Neo4jConfig,
     Neo4jConnection,
-    QueryService,
     ensure_schema,
 )
 
@@ -161,10 +161,10 @@ def test_pagination_consistency(ir: IR, neo4j_connection: Neo4jConnection) -> No
         if root_callable is None:
             return  # No call chain to test
 
-        query_service = QueryService(neo4j_connection)
+        query_executor = GraphQueryExecutor(neo4j_connection)
 
         # Get all callees without pagination
-        all_callees = query_service.get_all_callees_unpaginated(root_callable.id)
+        all_callees = query_executor.get_all_callees_unpaginated(root_callable.id)
         all_callee_ids = {c.id for c in all_callees}
 
         # Get callees with pagination (small page size to force multiple pages)
@@ -174,7 +174,7 @@ def test_pagination_consistency(ir: IR, neo4j_connection: Neo4jConnection) -> No
         max_pages = 20  # Safety limit
 
         while page <= max_pages:
-            result = query_service.get_call_chain(
+            result = query_executor.get_call_chain(
                 root_callable.id,
                 direction="callees",
                 page=page,

@@ -11,9 +11,21 @@ uv sync
 ## Usage
 
 ```bash
-synapse init <project-path>
-synapse scan <project-id>
-synapse query calls <callable-id>
+# Project management
+synapse init <project-path>          # Register a project
+synapse scan <project-id>            # Scan project code
+synapse list-projects                # List active projects
+synapse list-projects --include-archived  # Include archived projects
+
+# Project lifecycle
+synapse delete <project-id>          # Archive a project (soft delete)
+synapse restore <project-id>         # Restore an archived project
+synapse purge <project-id>           # Permanently delete an archived project
+
+# Queries
+synapse query calls <callable-id>    # Query call chains
+synapse query types <type-id>        # Query type hierarchy
+synapse query modules <module-id>    # Query module dependencies
 ```
 
 ## Configuration

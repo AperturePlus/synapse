@@ -4,6 +4,7 @@ from synapse.services.project_service import (
     Project,
     ProjectCreateResult,
     ProjectExistsError,
+    ProjectNotArchivedError,
     ProjectNotFoundError,
     ProjectService,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "Project",
     "ProjectCreateResult",
     "ProjectExistsError",
+    "ProjectNotArchivedError",
     "ProjectNotFoundError",
     "ProjectService",
     "QueryService",

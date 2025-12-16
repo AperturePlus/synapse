@@ -29,6 +29,7 @@ class ScanResult:
     types_count: int = 0
     callables_count: int = 0
     unresolved_count: int = 0
+    nodes_cleared: int = 0
     write_result: WriteResult | None = None
     errors: list[str] = field(default_factory=list)
 
@@ -61,7 +62,12 @@ class ScannerService:
         self._writer = GraphWriter(connection)
 
 
-    def scan_project(self, project_id: str, source_path: Path) -> ScanResult:
+    def scan_project(
+        self,
+        project_id: str,
+        source_path: Path,
+        clear_before_scan: bool = True,
+    ) -> ScanResult:
         """Scan a project's source code and write to graph.
 
         Detects languages present in the source directory, runs appropriate
@@ -70,6 +76,9 @@ class ScannerService:
         Args:
             project_id: Project identifier for scoping.
             source_path: Root directory of source code.
+            clear_before_scan: If True, clears existing project data before
+                writing new data. This ensures deleted/renamed code entities
+                don't remain as stale nodes. Default is True.
 
         Returns:
             ScanResult with statistics and any errors.
@@ -79,6 +88,10 @@ class ScannerService:
         if not source_path.exists():
             result.errors.append(f"Source path does not exist: {source_path}")
             return result
+
+        # Clear existing project data to avoid stale nodes from deleted/renamed code
+        if clear_before_scan:
+            result.nodes_cleared = self._writer.clear_project(project_id)
 
         # Detect languages present in the source directory
         detected_languages = self._detect_languages(source_path)

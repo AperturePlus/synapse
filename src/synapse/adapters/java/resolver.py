@@ -95,10 +95,16 @@ class JavaResolver:
         self._ast = JavaAstUtils()
 
     def resolve_directory(self, source_path: Path, symbol_table: SymbolTable) -> IR:
-        """Resolve references in all Java files and return IR."""
+        """Resolve references in all Java files and return IR.
+
+        Files are processed in sorted order to ensure deterministic results
+        regardless of filesystem traversal order (Requirement 5.3).
+        """
         ir = IR(language_type=self._language_type)
 
-        for java_file in source_path.rglob("*.java"):
+        # Sort files for deterministic processing order (Requirement 5.3)
+        java_files = sorted(source_path.rglob("*.java"))
+        for java_file in java_files:
             try:
                 self._process_file(java_file, source_path, symbol_table, ir)
             except Exception as e:

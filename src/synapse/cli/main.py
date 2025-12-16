@@ -70,12 +70,18 @@ def main_callback(
 
 
 def get_connection():
-    """Get Neo4j connection with error handling."""
+    """Get Neo4j connection with error handling.
+
+    Also ensures the database schema (indexes and constraints) is initialized.
+    """
     from synapse.graph.connection import Neo4jConnection, ConnectionError as Neo4jConnError
+    from synapse.graph.schema import ensure_schema
 
     try:
         conn = Neo4jConnection()
         conn.verify_connectivity()
+        # Ensure schema is initialized (idempotent)
+        ensure_schema(conn)
         return conn
     except Neo4jConnError as e:
         err_console.print(f"[red]Error:[/red] Failed to connect to Neo4j: {e}")
@@ -460,36 +466,58 @@ def export(
 
 
 @app.command()
-def list_projects() -> None:
+def list_projects(
+    include_archived: Annotated[
+        bool,
+        typer.Option("--include-archived", "-a", help="Include archived projects"),
+    ] = False,
+) -> None:
     """List all registered projects.
 
     Example:
         synapse list-projects
+        synapse list-projects --include-archived
     """
     from synapse.services.project_service import ProjectService
 
     conn = get_connection()
     try:
         service = ProjectService(conn)
-        projects = service.list_projects()
+        projects = service.list_projects(include_archived=include_archived)
 
         if not projects:
-            console.print("[yellow]No projects registered[/yellow]")
+            if include_archived:
+                console.print("[yellow]No projects registered[/yellow]")
+            else:
+                console.print("[yellow]No active projects registered[/yellow]")
             return
 
-        table = Table(show_header=True, title="Registered Projects")
+        title = "All Projects" if include_archived else "Active Projects"
+        table = Table(show_header=True, title=title)
         table.add_column("ID", style="cyan")
         table.add_column("Name")
         table.add_column("Path")
         table.add_column("Created At")
+        if include_archived:
+            table.add_column("Status")
 
         for project in projects:
-            table.add_row(
-                project.id,
-                project.name,
-                project.path,
-                project.created_at.strftime("%Y-%m-%d %H:%M"),
-            )
+            if include_archived:
+                status = "[red]Archived[/red]" if project.archived else "[green]Active[/green]"
+                table.add_row(
+                    project.id,
+                    project.name,
+                    project.path,
+                    project.created_at.strftime("%Y-%m-%d %H:%M"),
+                    status,
+                )
+            else:
+                table.add_row(
+                    project.id,
+                    project.name,
+                    project.path,
+                    project.created_at.strftime("%Y-%m-%d %H:%M"),
+                )
 
         console.print(table)
     finally:
@@ -498,15 +526,20 @@ def list_projects() -> None:
 
 @app.command()
 def delete(
-    project_id: Annotated[str, typer.Argument(help="Project ID to delete")],
+    project_id: Annotated[str, typer.Argument(help="Project ID to archive")],
     force: Annotated[
         bool,
         typer.Option("--force", "-f", help="Skip confirmation"),
     ] = False,
 ) -> None:
-    """Delete a project and all its data.
+    """Archive a project (soft delete).
+
+    Archives the project by marking it as deleted. The project data is preserved
+    and can be restored later using the 'restore' command, or permanently removed
+    using the 'purge' command.
 
     Example:
+        synapse delete abc123
         synapse delete abc123 --force
     """
     from synapse.services.project_service import ProjectService
@@ -521,17 +554,109 @@ def delete(
             raise typer.Exit(1)
 
         if not force:
-            console.print(f"[yellow]Warning:[/yellow] This will delete project '{project.name}'")
+            console.print(f"[yellow]Warning:[/yellow] This will archive project '{project.name}'")
             console.print(f"  Path: {project.path}")
+            console.print("[dim]Use 'restore' to recover or 'purge' to permanently delete[/dim]")
             confirm = typer.confirm("Are you sure?")
             if not confirm:
                 console.print("Cancelled")
                 raise typer.Exit(0)
 
         if service.delete_project(project_id):
-            console.print(f"[green]✓[/green] Project deleted: {project.name}")
+            console.print(f"[green]✓[/green] Project archived: {project.name}")
         else:
-            err_console.print(f"[red]Error:[/red] Failed to delete project")
+            err_console.print(f"[red]Error:[/red] Failed to archive project")
+            raise typer.Exit(1)
+    finally:
+        conn.close()
+
+
+@app.command()
+def restore(
+    project_id: Annotated[str, typer.Argument(help="Project ID to restore")],
+) -> None:
+    """Restore an archived project.
+
+    Restores a previously archived project, making it active again.
+
+    Example:
+        synapse restore abc123
+    """
+    from synapse.services.project_service import ProjectService
+
+    conn = get_connection()
+    try:
+        service = ProjectService(conn)
+        # Check if project exists (including archived)
+        project = service.get_by_id(project_id, include_archived=True)
+
+        if not project:
+            err_console.print(f"[red]Error:[/red] Project not found: {project_id}")
+            raise typer.Exit(1)
+
+        if not project.archived:
+            console.print(f"[yellow]![/yellow] Project '{project.name}' is not archived")
+            raise typer.Exit(0)
+
+        if service.restore_project(project_id):
+            console.print(f"[green]✓[/green] Project restored: {project.name}")
+        else:
+            err_console.print(f"[red]Error:[/red] Failed to restore project")
+            raise typer.Exit(1)
+    finally:
+        conn.close()
+
+
+@app.command()
+def purge(
+    project_id: Annotated[str, typer.Argument(help="Project ID to permanently delete")],
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Skip confirmation"),
+    ] = False,
+) -> None:
+    """Permanently delete an archived project.
+
+    This operation cannot be undone. The project must be archived first
+    using the 'delete' command before it can be purged.
+
+    Example:
+        synapse purge abc123
+        synapse purge abc123 --force
+    """
+    from synapse.services.project_service import ProjectService, ProjectNotArchivedError
+
+    conn = get_connection()
+    try:
+        service = ProjectService(conn)
+        # Check if project exists (including archived)
+        project = service.get_by_id(project_id, include_archived=True)
+
+        if not project:
+            err_console.print(f"[red]Error:[/red] Project not found: {project_id}")
+            raise typer.Exit(1)
+
+        if not force:
+            console.print(
+                f"[red]Warning:[/red] This will PERMANENTLY delete project '{project.name}'"
+            )
+            console.print(f"  Path: {project.path}")
+            console.print("[red]This action cannot be undone![/red]")
+            confirm = typer.confirm("Are you absolutely sure?")
+            if not confirm:
+                console.print("Cancelled")
+                raise typer.Exit(0)
+
+        try:
+            if service.purge_project(project_id):
+                console.print(f"[green]✓[/green] Project permanently deleted: {project.name}")
+            else:
+                err_console.print(f"[red]Error:[/red] Failed to purge project")
+                raise typer.Exit(1)
+        except ProjectNotArchivedError:
+            err_console.print(f"[red]Error:[/red] Project must be archived before purging")
+            err_console.print("[yellow]Hint:[/yellow] Use 'synapse delete' first to archive")
+            print_exception(ProjectNotArchivedError(project_id))
             raise typer.Exit(1)
     finally:
         conn.close()
