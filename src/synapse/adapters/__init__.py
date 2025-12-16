@@ -12,11 +12,13 @@ from synapse.adapters.base import (
 )
 from synapse.adapters.go import GoAdapter
 from synapse.adapters.java import JavaAdapter
+from synapse.adapters.php import PhpAdapter
 
 __all__ = [
     "FileContext",
     "GoAdapter",
     "JavaAdapter",
+    "PhpAdapter",
     "LanguageAdapter",
     "SymbolTable",
     "generate_entity_id",

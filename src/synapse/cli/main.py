@@ -174,6 +174,10 @@ def scan(
             console.print(f"  Callables: {result.callables_count}")
             if result.unresolved_count > 0:
                 console.print(f"  [yellow]Unresolved references: {result.unresolved_count}[/yellow]")
+            if result.warnings:
+                console.print(f"  [yellow]Warnings: {len(result.warnings)}[/yellow]")
+                for warning in result.warnings:
+                    console.print(f"  [yellow]- {warning}[/yellow]")
         else:
             err_console.print(f"[red]Error:[/red] Scan failed")
             for error in result.errors:

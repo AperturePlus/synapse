@@ -10,8 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from synapse.adapters import GoAdapter, JavaAdapter, LanguageAdapter
+from synapse.adapters import GoAdapter, JavaAdapter, LanguageAdapter, PhpAdapter
 from synapse.core.models import IR, LanguageType
+from synapse.enrichers import enrich_ir
 from synapse.graph import GraphWriter
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ class ScanResult:
     unresolved_count: int = 0
     nodes_cleared: int = 0
     write_result: WriteResult | None = None
+    warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -50,6 +52,7 @@ class ScannerService:
     LANGUAGE_EXTENSIONS: dict[str, LanguageType] = {
         ".java": LanguageType.JAVA,
         ".go": LanguageType.GO,
+        ".php": LanguageType.PHP,
     }
 
     def __init__(self, connection: Neo4jConnection) -> None:
@@ -125,6 +128,11 @@ class ScannerService:
             result.errors.append("No IR data produced from scan")
             return result
 
+        # Framework/semantic enrichment (best-effort, non-fatal)
+        enricher_errors = enrich_ir(merged_ir, source_path, set(result.languages_scanned))
+        for err in enricher_errors:
+            result.warnings.append(f"Enricher warning: {err}")
+
         # Update counts
         result.modules_count = len(merged_ir.modules)
         result.types_count = len(merged_ir.types)
@@ -177,6 +185,8 @@ class ScannerService:
                 adapters.append(JavaAdapter(project_id))
             elif lang == LanguageType.GO:
                 adapters.append(GoAdapter(project_id))
+            elif lang == LanguageType.PHP:
+                adapters.append(PhpAdapter(project_id))
 
         return adapters
 

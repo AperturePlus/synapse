@@ -395,4 +395,4 @@ class TestDeleteCommand:
                 result = runner.invoke(app, ["delete", "delete123", "--force"])
 
                 assert result.exit_code == 0
-                assert "deleted" in result.output.lower()
+                assert "archived" in result.output.lower()

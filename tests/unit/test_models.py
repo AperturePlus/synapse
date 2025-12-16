@@ -23,12 +23,14 @@ class TestEnums:
     def test_language_type_values(self) -> None:
         assert LanguageType.JAVA.value == "java"
         assert LanguageType.GO.value == "go"
+        assert LanguageType.PHP.value == "php"
 
     def test_type_kind_values(self) -> None:
         assert TypeKind.CLASS.value == "CLASS"
         assert TypeKind.INTERFACE.value == "INTERFACE"
         assert TypeKind.STRUCT.value == "STRUCT"
         assert TypeKind.ENUM.value == "ENUM"
+        assert TypeKind.TRAIT.value == "TRAIT"
 
     def test_callable_kind_values(self) -> None:
         assert CallableKind.FUNCTION.value == "FUNCTION"

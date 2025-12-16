@@ -28,6 +28,8 @@ _ALLOWED_LABELS = frozenset({"Module", "Type", "Callable", "Project"})
 _ALLOWED_REL_TYPES = frozenset({
     "CONTAINS", "DECLARES", "EXTENDS", "IMPLEMENTS",
     "EMBEDS", "CALLS", "OVERRIDES", "RETURNS",
+    # Framework / semantic enrichers
+    "INJECTS", "PERSISTS",
 })
 
 
@@ -169,6 +171,8 @@ class GraphWriter:
                 "qualifiedName": t.qualified_name,
                 "kind": t.kind.value,
                 "modifiers": t.modifiers,
+                "annotations": t.annotations,
+                "stereotypes": t.stereotypes,
                 "languageType": t.language_type.value,
                 "projectId": project_id,
             }
@@ -182,6 +186,8 @@ class GraphWriter:
             typ.qualifiedName = t.qualifiedName,
             typ.kind = t.kind,
             typ.modifiers = t.modifiers,
+            typ.annotations = t.annotations,
+            typ.stereotypes = t.stereotypes,
             typ.languageType = t.languageType,
             typ.projectId = t.projectId
         """
@@ -203,6 +209,9 @@ class GraphWriter:
                 "signature": c.signature,
                 "isStatic": c.is_static,
                 "visibility": c.visibility.value,
+                "annotations": c.annotations,
+                "stereotypes": c.stereotypes,
+                "routes": c.routes,
                 "languageType": c.language_type.value,
                 "projectId": project_id,
             }
@@ -218,6 +227,9 @@ class GraphWriter:
             cal.signature = c.signature,
             cal.isStatic = c.isStatic,
             cal.visibility = c.visibility,
+            cal.annotations = c.annotations,
+            cal.stereotypes = c.stereotypes,
+            cal.routes = c.routes,
             cal.languageType = c.languageType,
             cal.projectId = c.projectId
         """
@@ -362,6 +374,57 @@ class GraphWriter:
                     source_id=call.id, target_id=call.return_type,
                     relationship_type="RETURNS", reason="Return type not found",
                 ))
+
+        # Additional relationships (framework/semantic enrichers)
+        def _infer_label(entity_id: str) -> str | None:
+            if entity_id in ir.modules:
+                return "Module"
+            if entity_id in ir.types:
+                return "Type"
+            if entity_id in ir.callables:
+                return "Callable"
+            return None
+
+        for rel in ir.relationships:
+            src_label = _infer_label(rel.source_id)
+            tgt_label = _infer_label(rel.target_id)
+
+            if src_label is None:
+                dangling.append(
+                    DanglingReference(
+                        source_id=rel.source_id,
+                        target_id=rel.target_id,
+                        relationship_type=rel.relationship_type,
+                        reason="Source node not found in IR",
+                    )
+                )
+                continue
+
+            if tgt_label is None or rel.target_id not in valid_ids:
+                dangling.append(
+                    DanglingReference(
+                        source_id=rel.source_id,
+                        target_id=rel.target_id,
+                        relationship_type=rel.relationship_type,
+                        reason="Target node not found in IR",
+                    )
+                )
+                continue
+
+            if rel.source_id not in valid_ids:
+                dangling.append(
+                    DanglingReference(
+                        source_id=rel.source_id,
+                        target_id=rel.target_id,
+                        relationship_type=rel.relationship_type,
+                        reason="Source node not found",
+                    )
+                )
+                continue
+
+            rels.setdefault((src_label, rel.relationship_type, tgt_label), []).append(
+                (rel.source_id, rel.target_id)
+            )
 
         # Batch write all relationships
         total_written = 0

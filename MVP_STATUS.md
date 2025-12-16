@@ -11,6 +11,7 @@
 #### 1. 代码解析
 - [x] Java 语言支持（tree-sitter）
 - [x] Go 语言支持（tree-sitter）
+- [x] PHP 语言支持（tree-sitter，experimental）
 - [x] 两阶段解析（定义扫描 + 引用解析）
 - [x] 符号表构建
 - [x] 确定性 ID 生成
@@ -111,7 +112,7 @@
 ## 已知限制
 
 ### 1. 语言支持
-- 仅支持 Java 和 Go
+- 支持 Java、Go、PHP（PHP 为 experimental，调用解析为 best-effort）
 - 不支持 Kotlin、Scala、TypeScript 等
 
 ### 2. 代码分析

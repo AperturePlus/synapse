@@ -11,11 +11,96 @@ All queries support pagination.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from synapse.graph.connection import Neo4jConnection
 
+
+# =============================================================================
+# Query Templates
+# =============================================================================
+
+class _CallChainTemplates:
+    """Cypher query templates for call chain operations."""
+
+    CALLERS_MATCH = """
+    MATCH path = (caller:Callable)-[:CALLS*1..{max_depth}]->(target:Callable {{id: $id}})
+    """
+
+    CALLEES_MATCH = """
+    MATCH path = (source:Callable {{id: $id}})-[:CALLS*1..{max_depth}]->(callee:Callable)
+    """
+
+    COUNT_RETURN = "RETURN count(DISTINCT {node}) AS total"
+
+    DATA_RETURN = """
+    WITH {node}, min(length(path)) AS depth
+    RETURN DISTINCT {node}.id AS id, {node}.name AS name,
+           {node}.qualifiedName AS qualifiedName, {node}.kind AS kind,
+           {node}.signature AS signature, depth
+    ORDER BY depth, {node}.qualifiedName
+    SKIP $skip LIMIT $limit
+    """
+
+    DATA_RETURN_UNPAGINATED = """
+    WITH {node}, min(length(path)) AS depth
+    RETURN DISTINCT {node}.id AS id, {node}.name AS name,
+           {node}.qualifiedName AS qualifiedName, {node}.kind AS kind,
+           {node}.signature AS signature, depth
+    ORDER BY depth, {node}.qualifiedName
+    """
+
+
+class _TypeHierarchyTemplates:
+    """Cypher query templates for type hierarchy operations."""
+
+    ANCESTORS_MATCH = """
+    MATCH path = (t:Type {id: $id})-[:EXTENDS*1..]->(ancestor:Type)
+    """
+
+    DESCENDANTS_MATCH = """
+    MATCH path = (descendant:Type)-[:EXTENDS*1..]->(t:Type {id: $id})
+    """
+
+    COUNT_RETURN = "RETURN count(DISTINCT {node}) AS total"
+
+    DATA_RETURN = """
+    WITH {node}, min(length(path)) AS depth
+    RETURN DISTINCT {node}.id AS id, {node}.name AS name,
+           {node}.qualifiedName AS qualifiedName, {node}.kind AS kind, depth
+    ORDER BY depth, {node}.qualifiedName
+    SKIP $skip LIMIT $limit
+    """
+
+
+class _ModuleDependencyTemplates:
+    """Cypher query templates for module dependency operations."""
+
+    MATCH = """
+    MATCH (m:Module {id: $id})-[:DECLARES]->(t:Type)
+    MATCH (t)-[r:EXTENDS|IMPLEMENTS|EMBEDS]->(dep:Type)<-[:DECLARES]-(depMod:Module)
+    WHERE depMod.id <> m.id
+    """
+
+    COUNT_RETURN = "RETURN count(DISTINCT depMod) AS total"
+
+    DATA_RETURN = """
+    WITH m, depMod, type(r) AS relType
+    RETURN DISTINCT
+        m.id AS sourceId, m.name AS sourceName,
+        m.qualifiedName AS sourceQualifiedName, m.path AS sourcePath,
+        depMod.id AS targetId, depMod.name AS targetName,
+        depMod.qualifiedName AS targetQualifiedName, depMod.path AS targetPath,
+        relType
+    ORDER BY depMod.qualifiedName
+    SKIP $skip LIMIT $limit
+    """
+
+
+# =============================================================================
+# Data Classes
+# =============================================================================
 
 @dataclass
 class CallableInfo:
@@ -27,6 +112,18 @@ class CallableInfo:
     kind: str
     signature: str
     depth: int = 0
+
+    @classmethod
+    def from_record(cls, record: Any) -> CallableInfo:
+        """Create CallableInfo from a Neo4j record."""
+        return cls(
+            id=record["id"],
+            name=record["name"],
+            qualified_name=record["qualifiedName"],
+            kind=record["kind"],
+            signature=record["signature"],
+            depth=record["depth"],
+        )
 
 
 @dataclass
@@ -49,6 +146,17 @@ class TypeInfo:
     qualified_name: str
     kind: str
     depth: int = 0
+
+    @classmethod
+    def from_record(cls, record: Any) -> TypeInfo:
+        """Create TypeInfo from a Neo4j record."""
+        return cls(
+            id=record["id"],
+            name=record["name"],
+            qualified_name=record["qualifiedName"],
+            kind=record["kind"],
+            depth=record["depth"],
+        )
 
 
 @dataclass
@@ -80,17 +188,71 @@ class ModuleDependency:
     target_module: ModuleInfo
     dependency_type: str  # "DECLARES", "IMPORTS", etc.
 
+    @classmethod
+    def from_record(cls, record: Any) -> ModuleDependency:
+        """Create ModuleDependency from a Neo4j record."""
+        return cls(
+            source_module=ModuleInfo(
+                id=record["sourceId"],
+                name=record["sourceName"],
+                qualified_name=record["sourceQualifiedName"],
+                path=record["sourcePath"],
+            ),
+            target_module=ModuleInfo(
+                id=record["targetId"],
+                name=record["targetName"],
+                qualified_name=record["targetQualifiedName"],
+                path=record["targetPath"],
+            ),
+            dependency_type=record["relType"],
+        )
+
 
 @dataclass
 class PaginatedResult:
     """Generic paginated result."""
 
-    items: list
+    items: list[Any]
     page: int
     page_size: int
     total: int
     has_next: bool
 
+
+# =============================================================================
+# Query Builder
+# =============================================================================
+
+class _QueryBuilder:
+    """Builder for constructing Cypher queries from templates."""
+
+    @staticmethod
+    def build_count_query(match_clause: str, node_alias: str) -> str:
+        """Build a count query from match clause."""
+        count_return = _CallChainTemplates.COUNT_RETURN.format(node=node_alias)
+        return match_clause + count_return
+
+    @staticmethod
+    def build_call_chain_query(
+        match_clause: str, node_alias: str, paginated: bool = True
+    ) -> str:
+        """Build a call chain data query."""
+        if paginated:
+            return_clause = _CallChainTemplates.DATA_RETURN.format(node=node_alias)
+        else:
+            return_clause = _CallChainTemplates.DATA_RETURN_UNPAGINATED.format(node=node_alias)
+        return match_clause + return_clause
+
+    @staticmethod
+    def build_type_hierarchy_query(match_clause: str, node_alias: str) -> str:
+        """Build a type hierarchy data query."""
+        return_clause = _TypeHierarchyTemplates.DATA_RETURN.format(node=node_alias)
+        return match_clause + return_clause
+
+
+# =============================================================================
+# Query Executor
+# =============================================================================
 
 class GraphQueryExecutor:
     """Executor for Neo4j graph queries.
@@ -120,6 +282,24 @@ class GraphQueryExecutor:
         """Get default max depth from config."""
         return self._config.default_max_depth
 
+    def _execute_count_query(self, query: str, params: dict[str, Any]) -> int:
+        """Execute a count query and return the total."""
+        with self._connection.session() as session:
+            result = session.run(query, params)
+            record = result.single()
+            return int(record["total"]) if record else 0
+
+    def _execute_data_query(
+        self,
+        query: str,
+        params: dict[str, Any],
+        mapper: Any,
+    ) -> list[Any]:
+        """Execute a data query and map results using the mapper's from_record method."""
+        with self._connection.session() as session:
+            result = session.run(query, params)
+            return [mapper.from_record(record) for record in result]
+
     def get_call_chain(
         self,
         callable_id: str,
@@ -146,101 +326,48 @@ class GraphQueryExecutor:
         skip = (page - 1) * page_size
 
         if direction in ("callers", "both"):
-            callers, total = self._get_callers(callable_id, max_depth, skip, page_size)
+            callers, total = self._get_call_chain_direction(
+                callable_id, max_depth, skip, page_size, is_callers=True
+            )
             result.callers = callers
             result.total_callers = total
 
         if direction in ("callees", "both"):
-            callees, total = self._get_callees(callable_id, max_depth, skip, page_size)
+            callees, total = self._get_call_chain_direction(
+                callable_id, max_depth, skip, page_size, is_callers=False
+            )
             result.callees = callees
             result.total_callees = total
 
         return result
 
-    def _get_callers(
-        self, callable_id: str, max_depth: int, skip: int, limit: int
+    def _get_call_chain_direction(
+        self,
+        callable_id: str,
+        max_depth: int,
+        skip: int,
+        limit: int,
+        *,
+        is_callers: bool,
     ) -> tuple[list[CallableInfo], int]:
-        """Get callers of a callable."""
-        # Count query
-        count_query = f"""
-        MATCH (caller:Callable)-[:CALLS*1..{max_depth}]->(target:Callable {{id: $id}})
-        RETURN count(DISTINCT caller) AS total
-        """
+        """Get callers or callees of a callable."""
+        if is_callers:
+            match_clause = _CallChainTemplates.CALLERS_MATCH.format(max_depth=max_depth)
+            node_alias = "caller"
+        else:
+            match_clause = _CallChainTemplates.CALLEES_MATCH.format(max_depth=max_depth)
+            node_alias = "callee"
 
-        # Data query with depth
-        data_query = f"""
-        MATCH path = (caller:Callable)-[:CALLS*1..{max_depth}]->(target:Callable {{id: $id}})
-        WITH caller, min(length(path)) AS depth
-        RETURN DISTINCT caller.id AS id, caller.name AS name,
-               caller.qualifiedName AS qualifiedName, caller.kind AS kind,
-               caller.signature AS signature, depth
-        ORDER BY depth, caller.qualifiedName
-        SKIP $skip LIMIT $limit
-        """
+        count_query = _QueryBuilder.build_count_query(match_clause, node_alias)
+        data_query = _QueryBuilder.build_call_chain_query(match_clause, node_alias)
 
-        with self._connection.session() as session:
-            count_result = session.run(count_query, {"id": callable_id})
-            total = count_result.single()["total"]
+        params = {"id": callable_id}
+        total = self._execute_count_query(count_query, params)
 
-        with self._connection.session() as session:
-            data_result = session.run(
-                data_query, {"id": callable_id, "skip": skip, "limit": limit}
-            )
-            callers = [
-                CallableInfo(
-                    id=record["id"],
-                    name=record["name"],
-                    qualified_name=record["qualifiedName"],
-                    kind=record["kind"],
-                    signature=record["signature"],
-                    depth=record["depth"],
-                )
-                for record in data_result
-            ]
+        params_with_pagination = {"id": callable_id, "skip": skip, "limit": limit}
+        items = self._execute_data_query(data_query, params_with_pagination, CallableInfo)
 
-        return callers, total
-
-    def _get_callees(
-        self, callable_id: str, max_depth: int, skip: int, limit: int
-    ) -> tuple[list[CallableInfo], int]:
-        """Get callees of a callable."""
-        count_query = f"""
-        MATCH (source:Callable {{id: $id}})-[:CALLS*1..{max_depth}]->(callee:Callable)
-        RETURN count(DISTINCT callee) AS total
-        """
-
-        data_query = f"""
-        MATCH path = (source:Callable {{id: $id}})-[:CALLS*1..{max_depth}]->(callee:Callable)
-        WITH callee, min(length(path)) AS depth
-        RETURN DISTINCT callee.id AS id, callee.name AS name,
-               callee.qualifiedName AS qualifiedName, callee.kind AS kind,
-               callee.signature AS signature, depth
-        ORDER BY depth, callee.qualifiedName
-        SKIP $skip LIMIT $limit
-        """
-
-        with self._connection.session() as session:
-            count_result = session.run(count_query, {"id": callable_id})
-            total = count_result.single()["total"]
-
-        with self._connection.session() as session:
-            data_result = session.run(
-                data_query, {"id": callable_id, "skip": skip, "limit": limit}
-            )
-            callees = [
-                CallableInfo(
-                    id=record["id"],
-                    name=record["name"],
-                    qualified_name=record["qualifiedName"],
-                    kind=record["kind"],
-                    signature=record["signature"],
-                    depth=record["depth"],
-                )
-                for record in data_result
-            ]
-
-        return callees, total
-
+        return items, total
 
     def get_type_hierarchy(
         self,
@@ -265,94 +392,47 @@ class GraphQueryExecutor:
         skip = (page - 1) * page_size
 
         if direction in ("ancestors", "both"):
-            ancestors, total = self._get_ancestors(type_id, skip, page_size)
+            ancestors, total = self._get_type_hierarchy_direction(
+                type_id, skip, page_size, is_ancestors=True
+            )
             result.ancestors = ancestors
             result.total_ancestors = total
 
         if direction in ("descendants", "both"):
-            descendants, total = self._get_descendants(type_id, skip, page_size)
+            descendants, total = self._get_type_hierarchy_direction(
+                type_id, skip, page_size, is_ancestors=False
+            )
             result.descendants = descendants
             result.total_descendants = total
 
         return result
 
-    def _get_ancestors(
-        self, type_id: str, skip: int, limit: int
+    def _get_type_hierarchy_direction(
+        self,
+        type_id: str,
+        skip: int,
+        limit: int,
+        *,
+        is_ancestors: bool,
     ) -> tuple[list[TypeInfo], int]:
-        """Get ancestor types (via EXTENDS)."""
-        count_query = """
-        MATCH (t:Type {id: $id})-[:EXTENDS*1..]->(ancestor:Type)
-        RETURN count(DISTINCT ancestor) AS total
-        """
+        """Get ancestors or descendants of a type."""
+        if is_ancestors:
+            match_clause = _TypeHierarchyTemplates.ANCESTORS_MATCH
+            node_alias = "ancestor"
+        else:
+            match_clause = _TypeHierarchyTemplates.DESCENDANTS_MATCH
+            node_alias = "descendant"
 
-        data_query = """
-        MATCH path = (t:Type {id: $id})-[:EXTENDS*1..]->(ancestor:Type)
-        WITH ancestor, min(length(path)) AS depth
-        RETURN DISTINCT ancestor.id AS id, ancestor.name AS name,
-               ancestor.qualifiedName AS qualifiedName, ancestor.kind AS kind, depth
-        ORDER BY depth, ancestor.qualifiedName
-        SKIP $skip LIMIT $limit
-        """
+        count_query = _QueryBuilder.build_count_query(match_clause, node_alias)
+        data_query = _QueryBuilder.build_type_hierarchy_query(match_clause, node_alias)
 
-        with self._connection.session() as session:
-            count_result = session.run(count_query, {"id": type_id})
-            total = count_result.single()["total"]
+        params = {"id": type_id}
+        total = self._execute_count_query(count_query, params)
 
-        with self._connection.session() as session:
-            data_result = session.run(
-                data_query, {"id": type_id, "skip": skip, "limit": limit}
-            )
-            ancestors = [
-                TypeInfo(
-                    id=record["id"],
-                    name=record["name"],
-                    qualified_name=record["qualifiedName"],
-                    kind=record["kind"],
-                    depth=record["depth"],
-                )
-                for record in data_result
-            ]
+        params_with_pagination = {"id": type_id, "skip": skip, "limit": limit}
+        items = self._execute_data_query(data_query, params_with_pagination, TypeInfo)
 
-        return ancestors, total
-
-    def _get_descendants(
-        self, type_id: str, skip: int, limit: int
-    ) -> tuple[list[TypeInfo], int]:
-        """Get descendant types (via EXTENDS)."""
-        count_query = """
-        MATCH (descendant:Type)-[:EXTENDS*1..]->(t:Type {id: $id})
-        RETURN count(DISTINCT descendant) AS total
-        """
-
-        data_query = """
-        MATCH path = (descendant:Type)-[:EXTENDS*1..]->(t:Type {id: $id})
-        WITH descendant, min(length(path)) AS depth
-        RETURN DISTINCT descendant.id AS id, descendant.name AS name,
-               descendant.qualifiedName AS qualifiedName, descendant.kind AS kind, depth
-        ORDER BY depth, descendant.qualifiedName
-        SKIP $skip LIMIT $limit
-        """
-
-        with self._connection.session() as session:
-            count_result = session.run(count_query, {"id": type_id})
-            total = count_result.single()["total"]
-
-        with self._connection.session() as session:
-            data_result = session.run(
-                data_query, {"id": type_id, "skip": skip, "limit": limit}
-            )
-            descendants = [
-                TypeInfo(
-                    id=record["id"],
-                    name=record["name"],
-                    qualified_name=record["qualifiedName"],
-                    kind=record["kind"],
-                    depth=record["depth"],
-                )
-                for record in data_result
-            ]
-
-        return descendants, total
+        return items, total
 
     def get_module_dependencies(
         self,
@@ -376,56 +456,16 @@ class GraphQueryExecutor:
         page_size = page_size or self.default_page_size
         skip = (page - 1) * page_size
 
-        # Count query
-        count_query = """
-        MATCH (m:Module {id: $id})-[:DECLARES]->(t:Type)
-        MATCH (t)-[:EXTENDS|IMPLEMENTS|EMBEDS]->(dep:Type)<-[:DECLARES]-(depMod:Module)
-        WHERE depMod.id <> m.id
-        RETURN count(DISTINCT depMod) AS total
-        """
+        count_query = _ModuleDependencyTemplates.MATCH + _ModuleDependencyTemplates.COUNT_RETURN
+        data_query = _ModuleDependencyTemplates.MATCH + _ModuleDependencyTemplates.DATA_RETURN
 
-        # Data query
-        data_query = """
-        MATCH (m:Module {id: $id})-[:DECLARES]->(t:Type)
-        MATCH (t)-[r:EXTENDS|IMPLEMENTS|EMBEDS]->(dep:Type)<-[:DECLARES]-(depMod:Module)
-        WHERE depMod.id <> m.id
-        WITH m, depMod, type(r) AS relType
-        RETURN DISTINCT
-            m.id AS sourceId, m.name AS sourceName,
-            m.qualifiedName AS sourceQualifiedName, m.path AS sourcePath,
-            depMod.id AS targetId, depMod.name AS targetName,
-            depMod.qualifiedName AS targetQualifiedName, depMod.path AS targetPath,
-            relType
-        ORDER BY depMod.qualifiedName
-        SKIP $skip LIMIT $limit
-        """
+        params = {"id": module_id}
+        total = self._execute_count_query(count_query, params)
 
-        with self._connection.session() as session:
-            count_result = session.run(count_query, {"id": module_id})
-            total = count_result.single()["total"]
-
-        with self._connection.session() as session:
-            data_result = session.run(
-                data_query, {"id": module_id, "skip": skip, "limit": limit}
-            )
-            dependencies = [
-                ModuleDependency(
-                    source_module=ModuleInfo(
-                        id=record["sourceId"],
-                        name=record["sourceName"],
-                        qualified_name=record["sourceQualifiedName"],
-                        path=record["sourcePath"],
-                    ),
-                    target_module=ModuleInfo(
-                        id=record["targetId"],
-                        name=record["targetName"],
-                        qualified_name=record["targetQualifiedName"],
-                        path=record["targetPath"],
-                    ),
-                    dependency_type=record["relType"],
-                )
-                for record in data_result
-            ]
+        params_with_pagination = {"id": module_id, "skip": skip, "limit": page_size}
+        dependencies = self._execute_data_query(
+            data_query, params_with_pagination, ModuleDependency
+        )
 
         return PaginatedResult(
             items=dependencies,
@@ -448,25 +488,7 @@ class GraphQueryExecutor:
             List of all callees.
         """
         max_depth = max_depth or self.default_max_depth
-        query = f"""
-        MATCH path = (source:Callable {{id: $id}})-[:CALLS*1..{max_depth}]->(callee:Callable)
-        WITH callee, min(length(path)) AS depth
-        RETURN DISTINCT callee.id AS id, callee.name AS name,
-               callee.qualifiedName AS qualifiedName, callee.kind AS kind,
-               callee.signature AS signature, depth
-        ORDER BY depth, callee.qualifiedName
-        """
+        match_clause = _CallChainTemplates.CALLEES_MATCH.format(max_depth=max_depth)
+        query = _QueryBuilder.build_call_chain_query(match_clause, "callee", paginated=False)
 
-        with self._connection.session() as session:
-            result = session.run(query, {"id": callable_id})
-            return [
-                CallableInfo(
-                    id=record["id"],
-                    name=record["name"],
-                    qualified_name=record["qualifiedName"],
-                    kind=record["kind"],
-                    signature=record["signature"],
-                    depth=record["depth"],
-                )
-                for record in result
-            ]
+        return self._execute_data_query(query, {"id": callable_id}, CallableInfo)

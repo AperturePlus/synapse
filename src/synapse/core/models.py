@@ -16,6 +16,7 @@ class LanguageType(str, Enum):
 
     JAVA = "java"
     GO = "go"
+    PHP = "php"
 
 
 class TypeKind(str, Enum):
@@ -25,6 +26,7 @@ class TypeKind(str, Enum):
     INTERFACE = "INTERFACE"
     STRUCT = "STRUCT"
     ENUM = "ENUM"
+    TRAIT = "TRAIT"
 
 
 class CallableKind(str, Enum):
@@ -73,6 +75,14 @@ class Type(Entity):
     kind: TypeKind
     language_type: LanguageType
     modifiers: list[str] = Field(default_factory=list, description="Type modifiers")
+    annotations: list[str] = Field(
+        default_factory=list,
+        description="Annotations/attributes applied to the type (best-effort, language-specific)",
+    )
+    stereotypes: list[str] = Field(
+        default_factory=list,
+        description="Framework stereotypes/tags inferred by enrichers (e.g., spring:service)",
+    )
     extends: list[str] = Field(default_factory=list, description="Extended type IDs")
     implements: list[str] = Field(default_factory=list, description="Implemented interface IDs")
     embeds: list[str] = Field(default_factory=list, description="Embedded type IDs (Go)")
@@ -91,8 +101,28 @@ class Callable(Entity):
     is_static: bool = False
     visibility: Visibility = Visibility.PUBLIC
     return_type: str | None = Field(None, description="Return type ID")
+    annotations: list[str] = Field(
+        default_factory=list,
+        description="Annotations/attributes applied to the callable (best-effort, language-specific)",
+    )
+    stereotypes: list[str] = Field(
+        default_factory=list,
+        description="Framework stereotypes/tags inferred by enrichers (e.g., spring:route)",
+    )
+    routes: list[str] = Field(
+        default_factory=list,
+        description="HTTP route patterns handled by this callable (e.g., 'GET /users')",
+    )
     calls: list[str] = Field(default_factory=list, description="Called callable IDs")
     overrides: str | None = Field(None, description="Overridden method ID")
+
+
+class Relationship(BaseModel):
+    """Additional relationship inferred beyond core structural links."""
+
+    source_id: str = Field(..., description="Source entity ID")
+    target_id: str = Field(..., description="Target entity ID")
+    relationship_type: str = Field(..., description="Relationship type (Neo4j rel type)")
 
 
 class UnresolvedReference(BaseModel):
@@ -118,6 +148,9 @@ class IR(BaseModel):
     modules: dict[str, Module] = Field(default_factory=dict)
     types: dict[str, Type] = Field(default_factory=dict)
     callables: dict[str, Callable] = Field(default_factory=dict)
+    relationships: list[Relationship] = Field(
+        default_factory=list, description="Additional inferred relationships"
+    )
     unresolved: list[UnresolvedReference] = Field(
         default_factory=list, description="Unresolved references"
     )
@@ -137,5 +170,6 @@ class IR(BaseModel):
             modules={**self.modules, **other.modules},
             types={**self.types, **other.types},
             callables={**self.callables, **other.callables},
+            relationships=self.relationships + other.relationships,
             unresolved=self.unresolved + other.unresolved,
         )

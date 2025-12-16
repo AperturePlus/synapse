@@ -2,6 +2,17 @@
 
 Code topology modeling system based on Neo4j.
 
+## Supported languages
+
+- Java
+- Go
+- PHP (experimental)
+
+## Framework enrichment (best-effort)
+
+- Spring/Spring Boot: stereotypes, route mappings, DI edges (`INJECTS`), JPA repository links (`PERSISTS`)
+- Laravel: route-to-controller mapping attached to `Callable.routes`
+
 ## Installation
 
 ```bash
