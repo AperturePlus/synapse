@@ -68,3 +68,4 @@ neo4j/logs/
 .env
 
 tests/fixtures
+tests/test_connection.py

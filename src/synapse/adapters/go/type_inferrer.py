@@ -169,12 +169,21 @@ class GoTypeInferrer:
     def _infer_call_expression(self, node: Node, content: bytes) -> str | None:
         """Infer return type from function/method calls.
 
+        Handles chained calls by recursively inferring the return type of inner
+        calls. For chained calls like `a.b().c()`, this method:
+        1. Identifies that the operand of `c()` is a call_expression `a.b()`
+        2. Recursively infers the return type of `a.b()`
+        3. Uses that return type to resolve `c()`
+
         Args:
             node: The call_expression AST node.
             content: Source file content.
 
         Returns:
-            The return type of the called function/method.
+            The return type of the called function/method, or None if:
+            - The function cannot be resolved
+            - The receiver type is unknown (for method calls)
+            - The inner call's return type is unknown (for chained calls)
         """
         func_node = node.child_by_field_name("function")
         if func_node is None:
@@ -200,7 +209,19 @@ class GoTypeInferrer:
 
             # Try to infer receiver type for method resolution
             if operand_node:
+                # Check if operand is a chained call (call_expression)
+                is_chained_call = operand_node.type == "call_expression"
+
                 receiver_type = self.infer_type(operand_node, content)
+
+                # For chained calls, we MUST have the receiver type from the inner call
+                # If the inner call's return type is unknown, we cannot resolve the outer call
+                if is_chained_call and receiver_type is None:
+                    logger.debug(
+                        f"Chained call: inner call return type unknown for method {method_name}"
+                    )
+                    return None
+
                 if receiver_type:
                     # Look for method on receiver type
                     resolved = self._symbol_table.resolve_callable(
@@ -209,7 +230,16 @@ class GoTypeInferrer:
                     if resolved:
                         return self._symbol_table.get_callable_return_type(resolved)
 
+                    # For chained calls, don't fall back to heuristic resolution
+                    # The receiver type is known but method not found on that type
+                    if is_chained_call:
+                        logger.debug(
+                            f"Method {method_name} not found on type {receiver_type}"
+                        )
+                        return None
+
             # Fallback: try to resolve as any callable with this name
+            # Only used when receiver type is unknown and not a chained call
             resolved = self._symbol_table.resolve_callable(method_name)
             if resolved:
                 return self._symbol_table.get_callable_return_type(resolved)
@@ -383,3 +413,18 @@ class GoTypeInferrer:
             return None
 
         return self.infer_type(operand_node, content)
+
+    def is_chained_call(self, selector_node: Node) -> bool:
+        """Check if a selector expression's operand is a call expression.
+
+        This is used to determine if a method call is chained on another
+        method call, which affects error reporting.
+
+        Args:
+            selector_node: The selector_expression AST node.
+
+        Returns:
+            True if the operand is a call_expression, False otherwise.
+        """
+        operand_node = selector_node.child_by_field_name("operand")
+        return operand_node is not None and operand_node.type == "call_expression"

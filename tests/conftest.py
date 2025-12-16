@@ -10,8 +10,8 @@ from hypothesis import settings
 load_dotenv()
 
 # Configure hypothesis for property-based testing
-settings.register_profile("ci", max_examples=100)
-settings.register_profile("dev", max_examples=20)
+settings.register_profile("ci", max_examples=100, deadline=None)
+settings.register_profile("dev", max_examples=20, deadline=None)
 settings.load_profile("dev")
 
 

@@ -12,6 +12,10 @@ from __future__ import annotations
 import os
 import uuid
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import pytest
 from hypothesis import HealthCheck, given, settings, strategies as st
 

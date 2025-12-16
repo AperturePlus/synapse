@@ -37,15 +37,34 @@ class Neo4jConfig:
         Environment variables (with SYNAPSE_ prefix or without):
             SYNAPSE_NEO4J_URI or NEO4J_URI: Database URI (default: bolt://localhost:7687)
             SYNAPSE_NEO4J_USERNAME or NEO4J_USERNAME: Username (default: neo4j)
-            SYNAPSE_NEO4J_PASSWORD or NEO4J_PASSWORD: Password (default: neo4j)
+            SYNAPSE_NEO4J_PASSWORD or NEO4J_PASSWORD: Password (default: "")
+            NEO4J_AUTH: Optional auth string in the form "user/password" (common in Docker)
             SYNAPSE_NEO4J_DATABASE or NEO4J_DATABASE: Database name (default: neo4j)
             SYNAPSE_NEO4J_MAX_CONNECTION_POOL_SIZE or NEO4J_MAX_POOL_SIZE: Max pool size (default: 50)
             SYNAPSE_NEO4J_CONNECTION_TIMEOUT or NEO4J_CONNECTION_TIMEOUT: Timeout in seconds (default: 30)
         """
+
+        neo4j_auth = os.getenv("NEO4J_AUTH")
+        auth_user: str | None = None
+        auth_password: str | None = None
+        if neo4j_auth and neo4j_auth.lower() != "none":
+            # Docker-style: NEO4J_AUTH=neo4j/password
+            # Be defensive: split only on the first slash.
+            if "/" in neo4j_auth:
+                auth_user, auth_password = neo4j_auth.split("/", 1)
+
         return cls(
-            uri=os.getenv("SYNAPSE_NEO4J_URI") or os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-            username=os.getenv("SYNAPSE_NEO4J_USERNAME") or os.getenv("NEO4J_USERNAME", "neo4j"),
-            password=os.getenv("SYNAPSE_NEO4J_PASSWORD") or os.getenv("NEO4J_PASSWORD", "neo4j"),
+            uri=os.getenv("SYNAPSE_NEO4J_URI")
+            or os.getenv("NEO4J_URI")
+            or "bolt://localhost:7687",
+            username=os.getenv("SYNAPSE_NEO4J_USERNAME")
+            or os.getenv("NEO4J_USERNAME")
+            or auth_user
+            or "neo4j",
+            password=os.getenv("SYNAPSE_NEO4J_PASSWORD")
+            or os.getenv("NEO4J_PASSWORD")
+            or auth_password
+            or "",
             database=os.getenv("SYNAPSE_NEO4J_DATABASE") or os.getenv("NEO4J_DATABASE", "neo4j"),
             max_connection_pool_size=int(
                 os.getenv("SYNAPSE_NEO4J_MAX_CONNECTION_POOL_SIZE")

@@ -839,6 +839,7 @@ class GoResolver:
         """Resolve a selector expression call (method or pkg.func).
 
         Uses receiver type inference to disambiguate method calls.
+        Handles chained calls by using the return type of inner calls.
 
         Args:
             func_node: The selector_expression node
@@ -859,8 +860,10 @@ class GoResolver:
 
         # Try to infer receiver type for type-aware resolution
         receiver_type: str | None = None
+        inferrer = GoTypeInferrer(symbol_table, file_context, local_scope)
+        is_chained = inferrer.is_chained_call(func_node)
+
         if operand_node:
-            inferrer = GoTypeInferrer(symbol_table, file_context, local_scope)
             receiver_type = inferrer.infer_receiver_type(func_node, content)
 
         # Use type-aware resolution if we have a receiver type
@@ -881,6 +884,14 @@ class GoResolver:
                     context=f"receiver_type={receiver_type}",
                     reason=error_reason,
                 ))
+        elif is_chained:
+            # Chained call but inner call's return type is unknown
+            # Mark as unresolved with specific reason per Requirement 4.2
+            ir.unresolved.append(UnresolvedReference(
+                source_callable=caller.id,
+                target_name=method_name,
+                reason="Unknown receiver type from method call",
+            ))
         else:
             # Fallback: try heuristic resolution without receiver type
             resolved = symbol_table.resolve_callable(method_name)

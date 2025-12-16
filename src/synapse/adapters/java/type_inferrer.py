@@ -243,12 +243,21 @@ class TypeInferrer:
         This requires the method to be in the symbol table with return type
         information available.
 
+        Handles chained calls by recursively inferring the return type of inner
+        calls. For chained calls like `a.b().c()`, this method:
+        1. Identifies that the object of `c()` is a method_invocation `a.b()`
+        2. Recursively infers the return type of `a.b()`
+        3. Uses that return type to resolve `c()`
+
         Args:
             node: The method_invocation AST node.
             content: Source file content.
 
         Returns:
-            The return type of the called method, or None if not resolvable.
+            The return type of the called method, or None if:
+            - The method cannot be resolved
+            - The receiver type is unknown (for method calls)
+            - The inner call's return type is unknown (for chained calls)
         """
         name_node = node.child_by_field_name("name")
         if name_node is None:
@@ -261,10 +270,27 @@ class TypeInferrer:
         owner_type: str | None = None
 
         if object_node:
+            # Check if this is a chained call (object is another method_invocation)
+            is_chained_call = object_node.type == "method_invocation"
+
             # Try to infer the receiver's type
             owner_type = self.infer_type(object_node, content)
 
+            # For chained calls, we MUST have the receiver type from the inner call
+            # If the inner call's return type is unknown, we cannot resolve the outer call
+            if is_chained_call and owner_type is None:
+                logger.debug(
+                    f"Chained call: inner call return type unknown for method {method_name}"
+                )
+                return None
+
         # Try to resolve from symbol table
+        if owner_type:
+            # Resolve the owner type to qualified name for method lookup
+            resolved_owner = self._symbol_table.resolve_type(owner_type, self._file_context)
+            if resolved_owner:
+                owner_type = resolved_owner
+
         resolved = self._symbol_table.resolve_callable(method_name, owner_type)
         if resolved:
             # Check if we have return type info in the callable_return_types map
@@ -617,11 +643,26 @@ class TypeInferrer:
         Returns:
             The inferred return type, or None if unknown.
         """
+        # valueOf is commonly overloaded across many types.
+        # - String.valueOf(...) returns String
+        # - Integer.valueOf(...) returns Integer, Long.valueOf(...) returns Long, etc.
+        # If the receiver looks like a type name, return that type.
+        if method_name == "valueOf":
+            if object_node is not None:
+                receiver_text = JavaAstUtils.get_node_text(object_node, content)
+                # If this is qualified, keep the simple name.
+                simple_name = receiver_text.split(".")[-1]
+                # Heuristic: treat UpperCamelCase receivers as type names.
+                # If it's a variable like `obj`, keep legacy behavior and return String.
+                if simple_name and simple_name[:1].isupper():
+                    return simple_name
+            return "String"
+
         # Common String methods
         string_returning_methods = {
             "toString", "substring", "toLowerCase", "toUpperCase",
             "trim", "strip", "concat", "replace", "replaceAll",
-            "replaceFirst", "valueOf", "format", "join",
+            "replaceFirst", "format", "join",
         }
         if method_name in string_returning_methods:
             return "String"
@@ -673,3 +714,18 @@ class TypeInferrer:
             return "String[]"
 
         return None
+
+    def is_chained_call(self, invocation_node: Node) -> bool:
+        """Check if a method invocation's object is another method invocation.
+
+        This is used to determine if a method call is chained on another
+        method call, which affects error reporting.
+
+        Args:
+            invocation_node: The method_invocation AST node.
+
+        Returns:
+            True if the object is a method_invocation, False otherwise.
+        """
+        object_node = invocation_node.child_by_field_name("object")
+        return object_node is not None and object_node.type == "method_invocation"

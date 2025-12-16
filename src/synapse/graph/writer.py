@@ -138,7 +138,7 @@ class GraphWriter:
                 "name": m.name,
                 "qualifiedName": m.qualified_name,
                 "path": m.path,
-                "languageType": ir.language_type.value,
+                "languageType": m.language_type.value,
                 "projectId": project_id,
             }
             for m in ir.modules.values()
@@ -169,7 +169,7 @@ class GraphWriter:
                 "qualifiedName": t.qualified_name,
                 "kind": t.kind.value,
                 "modifiers": t.modifiers,
-                "languageType": ir.language_type.value,
+                "languageType": t.language_type.value,
                 "projectId": project_id,
             }
             for t in ir.types.values()
@@ -203,7 +203,7 @@ class GraphWriter:
                 "signature": c.signature,
                 "isStatic": c.is_static,
                 "visibility": c.visibility.value,
-                "languageType": ir.language_type.value,
+                "languageType": c.language_type.value,
                 "projectId": project_id,
             }
             for c in ir.callables.values()

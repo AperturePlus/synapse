@@ -260,6 +260,9 @@ class SymbolTable(BaseModel):
         3. Check imported types (explicit imports)
         4. Check wildcard imports
 
+        Note: Candidates are sorted to ensure deterministic resolution order
+        regardless of symbol table insertion order (Requirement 5.3).
+
         Args:
             short_name: The simple type name to resolve
             context: The file context containing package and imports
@@ -271,7 +274,8 @@ class SymbolTable(BaseModel):
         if short_name in context.local_types:
             return context.local_types[short_name]
 
-        candidates = self.type_map.get(short_name, [])
+        # Sort candidates for deterministic iteration order (Requirement 5.3)
+        candidates = sorted(self.type_map.get(short_name, []))
         if not candidates:
             return None
 
@@ -286,7 +290,7 @@ class SymbolTable(BaseModel):
                 if imp in candidates:
                     return imp
 
-        # 4. Check wildcard imports
+        # 4. Check wildcard imports (iterate sorted candidates for determinism)
         for imp in context.imports:
             if imp.endswith(".*"):
                 prefix = imp[:-2]  # Remove ".*"
@@ -304,6 +308,9 @@ class SymbolTable(BaseModel):
     ) -> str | None:
         """Resolve a callable's short name to its qualified name.
 
+        Note: Candidates are sorted to ensure deterministic resolution order
+        regardless of symbol table insertion order (Requirement 5.3).
+
         Args:
             short_name: The simple callable name to resolve
             owner_qualified_name: Optional owner type's qualified name for methods
@@ -311,12 +318,13 @@ class SymbolTable(BaseModel):
         Returns:
             The qualified name if resolved, None otherwise
         """
-        candidates = self.callable_map.get(short_name, [])
+        # Sort candidates for deterministic iteration order (Requirement 5.3)
+        candidates = sorted(self.callable_map.get(short_name, []))
         if not candidates:
             return None
 
         if owner_qualified_name:
-            # Look for method on specific type
+            # Look for method on specific type - return first match in sorted order
             prefix = f"{owner_qualified_name}."
             for candidate in candidates:
                 if candidate.startswith(prefix):
@@ -339,6 +347,9 @@ class SymbolTable(BaseModel):
         4. If multiple matches and signature provided, use signature to disambiguate
         5. If still ambiguous, return error "Ambiguous: N candidates"
 
+        Note: Candidates are sorted to ensure deterministic resolution order
+        regardless of symbol table insertion order (Requirement 5.3).
+
         Args:
             method_name: The simple method name to resolve
             receiver_type: The qualified name of the receiver type, or None if unknown
@@ -350,7 +361,8 @@ class SymbolTable(BaseModel):
         if receiver_type is None:
             return (None, "Unknown receiver type")
 
-        candidates = self.callable_map.get(method_name, [])
+        # Sort candidates for deterministic iteration order (Requirement 5.3)
+        candidates = sorted(self.callable_map.get(method_name, []))
         if not candidates:
             return (None, f"Method not found: {method_name}")
 
@@ -358,12 +370,14 @@ class SymbolTable(BaseModel):
         types_to_check = [receiver_type] + self.get_supertypes(receiver_type)
 
         # Find matching candidates on receiver type or supertypes
-        matching_candidates: list[str] = []
+        # Use a set for deduplication, then sort for deterministic order
+        matching_set: set[str] = set()
         for type_name in types_to_check:
             prefix = f"{type_name}."
             for candidate in candidates:
-                if candidate.startswith(prefix) and candidate not in matching_candidates:
-                    matching_candidates.append(candidate)
+                if candidate.startswith(prefix):
+                    matching_set.add(candidate)
+        matching_candidates = sorted(matching_set)
 
         if not matching_candidates:
             return (None, f"Method not found on type {receiver_type}")
@@ -371,24 +385,26 @@ class SymbolTable(BaseModel):
         # Try signature disambiguation if provided
         if signature:
             # Check each candidate for matching signature
-            signature_matches = []
+            # Use set for deduplication, then sort for deterministic order
+            signature_match_set: set[str] = set()
             for candidate in matching_candidates:
                 # Check if this candidate has the matching signature
                 sig_key = f"{candidate}#{signature}"
                 if sig_key in self.callable_signatures:
-                    signature_matches.append(candidate)
+                    signature_match_set.add(candidate)
                 # Also check legacy format
                 elif (candidate in self.callable_signatures and
                       self.callable_signatures[candidate] == signature):
-                    signature_matches.append(candidate)
+                    signature_match_set.add(candidate)
 
+            signature_matches = sorted(signature_match_set)
             if len(signature_matches) == 1:
                 return (signature_matches[0], None)
             if len(signature_matches) > 1:
                 return (None, f"Ambiguous: {len(signature_matches)} candidates")
 
             # No exact signature match - check if any candidate has this signature
-            # among its overloads
+            # among its overloads (iterate in sorted order for determinism)
             for candidate in matching_candidates:
                 all_sigs = self.get_all_signatures_for_callable(candidate)
                 if signature in all_sigs:

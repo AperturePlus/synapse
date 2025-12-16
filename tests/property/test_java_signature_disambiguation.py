@@ -110,18 +110,37 @@ def _build_signature_string(types: list[str]) -> str:
 
 def _zero_value(java_type: str) -> str:
     """Return a zero/default value literal for a Java type."""
-    if java_type in ("int", "long", "short", "byte"):
+    if java_type == "int":
         return "0"
-    elif java_type in ("double", "float"):
-        return "0.0"
+    elif java_type == "long":
+        # Use long literal to avoid resolving to int overload
+        return "0L"
+    elif java_type == "short":
+        return "(short)0"
+    elif java_type == "byte":
+        return "(byte)0"
+    elif java_type == "double":
+        return "0.0d"
+    elif java_type == "float":
+        return "0.0f"
     elif java_type == "boolean":
         return "false"
     elif java_type == "char":
         return "'a'"
     elif java_type == "String":
         return '""'
-    elif java_type in ("Integer", "Long", "Double", "Float", "Boolean", "Object"):
-        return "null"
+    elif java_type == "Integer":
+        return "Integer.valueOf(0)"
+    elif java_type == "Long":
+        return "Long.valueOf(0L)"
+    elif java_type == "Double":
+        return "Double.valueOf(0.0d)"
+    elif java_type == "Float":
+        return "Float.valueOf(0.0f)"
+    elif java_type == "Boolean":
+        return "Boolean.TRUE"
+    elif java_type == "Object":
+        return "new Object()"
     return "null"
 
 

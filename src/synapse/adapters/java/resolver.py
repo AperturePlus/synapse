@@ -335,6 +335,8 @@ class JavaResolver:
     ) -> None:
         """Find method invocations in a code block with type inference.
 
+        Handles chained calls by using the return type of inner calls.
+
         Args:
             node: The AST node to search for method calls.
             content: Source file content as bytes.
@@ -349,34 +351,47 @@ class JavaResolver:
             if name_node:
                 method_name = JavaAstUtils.get_node_text(name_node, content)
 
+                # Check if this is a chained call (object is another method_invocation)
+                object_node = node.child_by_field_name("object")
+                is_chained = object_node is not None and object_node.type == "method_invocation"
+
                 # Infer receiver type from the object field
                 receiver_type = self._infer_receiver_type(
                     node, content, file_context, symbol_table, local_scope
                 )
 
-                # Infer signature with type information
-                inferred_sig = self._infer_signature(
-                    node, content, file_context, symbol_table, local_scope
-                )
-
-                # Use _match_callable for overload resolution with receiver type
-                resolved, error_reason = self._match_callable(
-                    method_name, inferred_sig, symbol_table, receiver_type
-                )
-
-                if resolved:
-                    # Use the inferred signature for ID generation since that's what was matched
-                    # The inferred signature should match one of the declared signatures
-                    callee_id = self._generate_id(resolved, inferred_sig)
-                    if callee_id not in caller.calls:
-                        caller.calls.append(callee_id)
-                else:
-                    # Record as unresolved with the specific reason
+                # For chained calls, if receiver type is unknown, mark as unresolved
+                # with specific reason per Requirement 4.2
+                if is_chained and receiver_type is None:
                     ir.unresolved.append(UnresolvedReference(
                         source_callable=caller.id,
                         target_name=method_name,
-                        reason=error_reason or "Method not found in symbol table",
+                        reason="Unknown receiver type from method call",
                     ))
+                else:
+                    # Infer signature with type information
+                    inferred_sig = self._infer_signature(
+                        node, content, file_context, symbol_table, local_scope
+                    )
+
+                    # Use _match_callable for overload resolution with receiver type
+                    resolved, error_reason = self._match_callable(
+                        method_name, inferred_sig, symbol_table, receiver_type
+                    )
+
+                    if resolved:
+                        # Use the inferred signature for ID generation since that's what was matched
+                        # The inferred signature should match one of the declared signatures
+                        callee_id = self._generate_id(resolved, inferred_sig)
+                        if callee_id not in caller.calls:
+                            caller.calls.append(callee_id)
+                    else:
+                        # Record as unresolved with the specific reason
+                        ir.unresolved.append(UnresolvedReference(
+                            source_callable=caller.id,
+                            target_name=method_name,
+                            reason=error_reason or "Method not found in symbol table",
+                        ))
 
         # Recurse into children
         for child in node.children:
@@ -733,7 +748,8 @@ class JavaResolver:
 
         # Fall back to signature-based matching (for static methods or when
         # receiver type is unknown)
-        candidates = symbol_table.callable_map.get(method_name, [])
+        # Sort candidates for deterministic iteration order (Requirement 5.3)
+        candidates = sorted(symbol_table.callable_map.get(method_name, []))
         if not candidates:
             return None, "Method not found in symbol table"
 
