@@ -59,6 +59,9 @@ class SymbolTable(BaseModel):
     callable_signatures: dict[str, str] = Field(
         default_factory=dict, description="qualified_callable_name -> signature"
     )
+    type_hierarchy: dict[str, list[str]] = Field(
+        default_factory=dict, description="type_qualified_name -> [supertype_qualified_names]"
+    )
 
     def add_type(self, short_name: str, qualified_name: str) -> None:
         """Register a type in the symbol table."""
@@ -76,6 +79,11 @@ class SymbolTable(BaseModel):
     ) -> None:
         """Register a callable in the symbol table.
 
+        For overloaded methods (same qualified name, different signatures),
+        each overload is stored as a separate entry in callable_map.
+        The signature is used as part of the key for callable_signatures
+        and callable_return_types to support overload resolution.
+
         Args:
             short_name: The simple name of the callable.
             qualified_name: The fully qualified name.
@@ -84,26 +92,78 @@ class SymbolTable(BaseModel):
         """
         if short_name not in self.callable_map:
             self.callable_map[short_name] = []
-        if qualified_name not in self.callable_map[short_name]:
-            self.callable_map[short_name].append(qualified_name)
-        if return_type:
-            self.callable_return_types[qualified_name] = return_type
-        if signature:
-            self.callable_signatures[qualified_name] = signature
 
-    def get_callable_return_type(self, qualified_name: str) -> str | None:
-        """Get the return type for a callable.
+        # For overloaded methods, we need to track each overload separately
+        # Use qualified_name + signature as the unique key for signatures/return types
+        sig_key = f"{qualified_name}#{signature}" if signature else qualified_name
+
+        # Add to callable_map if this exact overload isn't already present
+        # Check if this specific overload (qualified_name + signature) exists
+        existing_sigs = [
+            self.callable_signatures.get(f"{qualified_name}#{s}")
+            for s in self._get_signatures_for_qualified_name(qualified_name)
+        ]
+
+        if signature not in existing_sigs:
+            # This is a new overload or the first entry
+            if qualified_name not in self.callable_map[short_name]:
+                self.callable_map[short_name].append(qualified_name)
+
+        if return_type:
+            self.callable_return_types[sig_key] = return_type
+        if signature:
+            self.callable_signatures[sig_key] = signature
+
+    def _get_signatures_for_qualified_name(self, qualified_name: str) -> list[str]:
+        """Get all signatures registered for a qualified name.
 
         Args:
             qualified_name: The fully qualified callable name.
 
         Returns:
+            List of signatures for this callable (for overload tracking).
+        """
+        signatures = []
+        prefix = f"{qualified_name}#"
+        for key in self.callable_signatures:
+            if key.startswith(prefix):
+                signatures.append(key[len(prefix):])
+            elif key == qualified_name:
+                # Legacy key without signature
+                signatures.append("")
+        return signatures
+
+    def get_callable_return_type(
+        self, qualified_name: str, signature: str | None = None
+    ) -> str | None:
+        """Get the return type for a callable.
+
+        Args:
+            qualified_name: The fully qualified callable name.
+            signature: Optional signature for overloaded methods.
+
+        Returns:
             The return type name, or None if not known.
         """
-        return self.callable_return_types.get(qualified_name)
+        if signature:
+            sig_key = f"{qualified_name}#{signature}"
+            if sig_key in self.callable_return_types:
+                return self.callable_return_types[sig_key]
+        # Fall back to legacy key or first match
+        if qualified_name in self.callable_return_types:
+            return self.callable_return_types[qualified_name]
+        # Try to find any return type for this qualified name
+        prefix = f"{qualified_name}#"
+        for key, value in self.callable_return_types.items():
+            if key.startswith(prefix):
+                return value
+        return None
 
     def get_callable_signature(self, qualified_name: str) -> str | None:
         """Get the signature for a callable.
+
+        For overloaded methods, returns the first signature found.
+        Use get_all_signatures_for_callable for all overloads.
 
         Args:
             qualified_name: The fully qualified callable name.
@@ -111,7 +171,35 @@ class SymbolTable(BaseModel):
         Returns:
             The signature string (e.g., "(String, int)"), or None if not known.
         """
-        return self.callable_signatures.get(qualified_name)
+        # Check legacy key first
+        if qualified_name in self.callable_signatures:
+            return self.callable_signatures[qualified_name]
+        # Try to find any signature for this qualified name
+        prefix = f"{qualified_name}#"
+        for key, value in self.callable_signatures.items():
+            if key.startswith(prefix):
+                return value
+        return None
+
+    def get_all_signatures_for_callable(self, qualified_name: str) -> list[str]:
+        """Get all signatures for a callable (for overloaded methods).
+
+        Args:
+            qualified_name: The fully qualified callable name.
+
+        Returns:
+            List of all signatures for this callable.
+        """
+        signatures = []
+        # Check legacy key
+        if qualified_name in self.callable_signatures:
+            signatures.append(self.callable_signatures[qualified_name])
+        # Check new format keys
+        prefix = f"{qualified_name}#"
+        for key, value in self.callable_signatures.items():
+            if key.startswith(prefix) and value not in signatures:
+                signatures.append(value)
+        return signatures
 
     def add_field(self, owner_type: str, field_name: str, field_type: str) -> None:
         """Register a field in the symbol table.
@@ -124,6 +212,30 @@ class SymbolTable(BaseModel):
         if owner_type not in self.field_types:
             self.field_types[owner_type] = {}
         self.field_types[owner_type][field_name] = field_type
+
+    def add_type_hierarchy(self, type_name: str, supertypes: list[str]) -> None:
+        """Register a type's supertypes in the symbol table.
+
+        Args:
+            type_name: The qualified name of the type.
+            supertypes: List of qualified names of supertypes (extends/implements/embeds).
+        """
+        if type_name not in self.type_hierarchy:
+            self.type_hierarchy[type_name] = []
+        for supertype in supertypes:
+            if supertype not in self.type_hierarchy[type_name]:
+                self.type_hierarchy[type_name].append(supertype)
+
+    def get_supertypes(self, type_name: str) -> list[str]:
+        """Get the supertypes for a type.
+
+        Args:
+            type_name: The qualified name of the type.
+
+        Returns:
+            List of qualified supertype names, or empty list if none.
+        """
+        return self.type_hierarchy.get(type_name, [])
 
     def get_field_type(self, owner_type: str, field_name: str) -> str | None:
         """Get the type of a field.
@@ -211,6 +323,83 @@ class SymbolTable(BaseModel):
                     return candidate
 
         return candidates[0] if len(candidates) == 1 else None
+
+    def resolve_callable_with_receiver(
+        self,
+        method_name: str,
+        receiver_type: str | None,
+        signature: str | None = None,
+    ) -> tuple[str | None, str | None]:
+        """Resolve callable using receiver type and signature.
+
+        Resolution order:
+        1. If receiver_type is None, return error "Unknown receiver type"
+        2. Check methods on the receiver type itself
+        3. Check methods on supertypes (in order)
+        4. If multiple matches and signature provided, use signature to disambiguate
+        5. If still ambiguous, return error "Ambiguous: N candidates"
+
+        Args:
+            method_name: The simple method name to resolve
+            receiver_type: The qualified name of the receiver type, or None if unknown
+            signature: Optional method signature for disambiguation
+
+        Returns:
+            Tuple of (qualified_name, error_reason) - one will be None
+        """
+        if receiver_type is None:
+            return (None, "Unknown receiver type")
+
+        candidates = self.callable_map.get(method_name, [])
+        if not candidates:
+            return (None, f"Method not found: {method_name}")
+
+        # Collect types to check: receiver type + supertypes
+        types_to_check = [receiver_type] + self.get_supertypes(receiver_type)
+
+        # Find matching candidates on receiver type or supertypes
+        matching_candidates: list[str] = []
+        for type_name in types_to_check:
+            prefix = f"{type_name}."
+            for candidate in candidates:
+                if candidate.startswith(prefix) and candidate not in matching_candidates:
+                    matching_candidates.append(candidate)
+
+        if not matching_candidates:
+            return (None, f"Method not found on type {receiver_type}")
+
+        # Try signature disambiguation if provided
+        if signature:
+            # Check each candidate for matching signature
+            signature_matches = []
+            for candidate in matching_candidates:
+                # Check if this candidate has the matching signature
+                sig_key = f"{candidate}#{signature}"
+                if sig_key in self.callable_signatures:
+                    signature_matches.append(candidate)
+                # Also check legacy format
+                elif (candidate in self.callable_signatures and
+                      self.callable_signatures[candidate] == signature):
+                    signature_matches.append(candidate)
+
+            if len(signature_matches) == 1:
+                return (signature_matches[0], None)
+            if len(signature_matches) > 1:
+                return (None, f"Ambiguous: {len(signature_matches)} candidates")
+
+            # No exact signature match - check if any candidate has this signature
+            # among its overloads
+            for candidate in matching_candidates:
+                all_sigs = self.get_all_signatures_for_callable(candidate)
+                if signature in all_sigs:
+                    return (candidate, None)
+
+        # If only one match and no signature provided, return it
+        if len(matching_candidates) == 1:
+            return (matching_candidates[0], None)
+
+        # Multiple matches without signature disambiguation
+        return (None, f"Ambiguous: {len(matching_candidates)} candidates")
 
 
 def generate_entity_id(

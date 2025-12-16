@@ -349,21 +349,25 @@ class JavaResolver:
             if name_node:
                 method_name = JavaAstUtils.get_node_text(name_node, content)
 
+                # Infer receiver type from the object field
+                receiver_type = self._infer_receiver_type(
+                    node, content, file_context, symbol_table, local_scope
+                )
+
                 # Infer signature with type information
                 inferred_sig = self._infer_signature(
                     node, content, file_context, symbol_table, local_scope
                 )
 
-                # Use _match_callable for overload resolution
+                # Use _match_callable for overload resolution with receiver type
                 resolved, error_reason = self._match_callable(
-                    method_name, inferred_sig, symbol_table
+                    method_name, inferred_sig, symbol_table, receiver_type
                 )
 
                 if resolved:
-                    # Use the declared signature from symbol table for ID generation
-                    declared_sig = symbol_table.get_callable_signature(resolved)
-                    sig_for_id = declared_sig if declared_sig else inferred_sig
-                    callee_id = self._generate_id(resolved, sig_for_id)
+                    # Use the inferred signature for ID generation since that's what was matched
+                    # The inferred signature should match one of the declared signatures
+                    callee_id = self._generate_id(resolved, inferred_sig)
                     if callee_id not in caller.calls:
                         caller.calls.append(callee_id)
                 else:
@@ -379,6 +383,52 @@ class JavaResolver:
             self._find_method_calls(
                 child, content, file_context, symbol_table, caller, ir, local_scope
             )
+
+    def _infer_receiver_type(
+        self,
+        invocation_node: Node,
+        content: bytes,
+        file_context: FileContext | None = None,
+        symbol_table: SymbolTable | None = None,
+        local_scope: LocalScope | None = None,
+    ) -> str | None:
+        """Infer the receiver type from a method invocation.
+
+        Determines the type of the object on which a method is being called.
+        For example, in `user.getName()`, this infers the type of `user`.
+
+        Args:
+            invocation_node: The method_invocation AST node.
+            content: Source file content as bytes.
+            file_context: File context for type resolution (optional).
+            symbol_table: Symbol table for type lookups (optional).
+            local_scope: Local scope for variable lookups (optional).
+
+        Returns:
+            The qualified type name of the receiver, or None if:
+            - No receiver (static method call or same-class method)
+            - Receiver type cannot be determined
+        """
+        object_node = invocation_node.child_by_field_name("object")
+        if object_node is None:
+            # No explicit receiver - could be a static method or same-class method
+            return None
+
+        if file_context is None or symbol_table is None or local_scope is None:
+            return None
+
+        # Import here to avoid circular dependency
+        from synapse.adapters.java.type_inferrer import TypeInferrer
+
+        inferrer = TypeInferrer(symbol_table, file_context, local_scope)
+        inferred_type = inferrer.infer_type(object_node, content)
+
+        if inferred_type is None:
+            return None
+
+        # Resolve the inferred type to its qualified name
+        resolved = symbol_table.resolve_type(inferred_type, file_context)
+        return resolved
 
     def _infer_signature(
         self,
@@ -648,24 +698,41 @@ class JavaResolver:
         method_name: str,
         inferred_sig: str,
         symbol_table: SymbolTable,
+        receiver_type: str | None = None,
     ) -> tuple[str | None, str | None]:
         """Match inferred signature against callable candidates.
 
         Attempts to find the best matching callable for a method invocation:
-        1. First attempts exact signature match
-        2. Falls back to arity-based matching for partial signatures (with ?)
+        1. If receiver_type is provided, use resolve_callable_with_receiver
+           for type-aware resolution with supertype fallback
+        2. Otherwise, fall back to signature-based matching
         3. Returns error reason for ambiguous matches
 
         Args:
             method_name: The simple name of the method being called.
             inferred_sig: The inferred signature from arguments (e.g., "(String, int)").
             symbol_table: Symbol table containing callable definitions.
+            receiver_type: The qualified name of the receiver type (optional).
 
         Returns:
             A tuple of (qualified_name, error_reason):
             - (qualified_name, None) if a unique match is found
             - (None, error_reason) if no match or ambiguous
         """
+        # If we have a receiver type, use type-aware resolution
+        if receiver_type is not None:
+            resolved, error = symbol_table.resolve_callable_with_receiver(
+                method_name, receiver_type, inferred_sig
+            )
+            if resolved is not None:
+                return resolved, None
+            # If resolve_callable_with_receiver failed, return its error
+            # unless it's "Method not found" - then try fallback
+            if error and "not found" not in error.lower():
+                return None, error
+
+        # Fall back to signature-based matching (for static methods or when
+        # receiver type is unknown)
         candidates = symbol_table.callable_map.get(method_name, [])
         if not candidates:
             return None, "Method not found in symbol table"
@@ -723,14 +790,14 @@ class JavaResolver:
 
         # Multiple exact matches is ambiguous
         if len(exact_matches) > 1:
-            return None, "Ambiguous overload"
+            return None, f"Ambiguous: {len(exact_matches)} candidates"
 
         # No exact matches - try arity matches
         if len(arity_matches) == 1:
             return arity_matches[0], None
 
         if len(arity_matches) > 1:
-            return None, "Ambiguous overload"
+            return None, f"Ambiguous: {len(arity_matches)} candidates"
 
         # No matches at all
         return None, "No callable matches the signature"

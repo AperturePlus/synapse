@@ -1703,8 +1703,8 @@ def test_ambiguous_overload_with_same_arity_placeholders(
     assert resolved is None, (
         f"Expected no resolution for ambiguous overload, got '{resolved}'"
     )
-    assert error_reason == "Ambiguous overload", (
-        f"Expected 'Ambiguous overload' error, got '{error_reason}'"
+    assert error_reason is not None and "Ambiguous" in error_reason, (
+        f"Expected 'Ambiguous' error, got '{error_reason}'"
     )
 
 

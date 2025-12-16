@@ -115,6 +115,13 @@ class JavaScanner:
                 # Register type in symbol table
                 symbol_table.add_type(type_name, qualified_name)
 
+                # Extract and register type hierarchy (extends/implements)
+                supertypes = self._extract_supertypes(
+                    child, content, package_name, symbol_table
+                )
+                if supertypes:
+                    symbol_table.add_type_hierarchy(qualified_name, supertypes)
+
                 # Scan for methods in this type
                 body_node = child.child_by_field_name("body")
                 if body_node:
@@ -131,6 +138,118 @@ class JavaScanner:
                 self._scan_type_declarations(
                     child, content, package_name, symbol_table, parent_type
                 )
+
+    def _extract_supertypes(
+        self,
+        type_node: Node,
+        content: bytes,
+        package_name: str,
+        symbol_table: SymbolTable,
+    ) -> list[str]:
+        """Extract extends and implements relationships from a type declaration.
+
+        Args:
+            type_node: The class/interface/enum declaration node
+            content: Source file content
+            package_name: Current package name for resolving local types
+            symbol_table: Symbol table for type resolution
+
+        Returns:
+            List of qualified names of supertypes (extends + implements)
+        """
+        supertypes: list[str] = []
+
+        for child in type_node.children:
+            if child.type == "superclass":
+                # extends clause for classes
+                for type_ref in child.children:
+                    if type_ref.type in ("type_identifier", "generic_type"):
+                        type_name = JavaAstUtils.get_type_name(type_ref, content)
+                        resolved = self._resolve_type_name(
+                            type_name, package_name, symbol_table
+                        )
+                        if resolved and resolved not in supertypes:
+                            supertypes.append(resolved)
+
+            elif child.type == "super_interfaces":
+                # implements clause for classes, extends clause for interfaces
+                for type_ref in child.children:
+                    if type_ref.type in ("type_identifier", "generic_type"):
+                        type_name = JavaAstUtils.get_type_name(type_ref, content)
+                        resolved = self._resolve_type_name(
+                            type_name, package_name, symbol_table
+                        )
+                        if resolved and resolved not in supertypes:
+                            supertypes.append(resolved)
+                    elif type_ref.type == "type_list":
+                        # Multiple interfaces
+                        for t in type_ref.children:
+                            if t.type in ("type_identifier", "generic_type"):
+                                type_name = JavaAstUtils.get_type_name(t, content)
+                                resolved = self._resolve_type_name(
+                                    type_name, package_name, symbol_table
+                                )
+                                if resolved and resolved not in supertypes:
+                                    supertypes.append(resolved)
+
+            elif child.type == "extends_interfaces":
+                # extends clause for interfaces (extends multiple interfaces)
+                for type_ref in child.children:
+                    if type_ref.type in ("type_identifier", "generic_type"):
+                        type_name = JavaAstUtils.get_type_name(type_ref, content)
+                        resolved = self._resolve_type_name(
+                            type_name, package_name, symbol_table
+                        )
+                        if resolved and resolved not in supertypes:
+                            supertypes.append(resolved)
+                    elif type_ref.type == "type_list":
+                        for t in type_ref.children:
+                            if t.type in ("type_identifier", "generic_type"):
+                                type_name = JavaAstUtils.get_type_name(t, content)
+                                resolved = self._resolve_type_name(
+                                    type_name, package_name, symbol_table
+                                )
+                                if resolved and resolved not in supertypes:
+                                    supertypes.append(resolved)
+
+        return supertypes
+
+    def _resolve_type_name(
+        self,
+        type_name: str,
+        package_name: str,
+        symbol_table: SymbolTable,
+    ) -> str | None:
+        """Resolve a simple type name to its qualified name.
+
+        First checks if the type exists in the same package, then falls back
+        to the symbol table.
+
+        Args:
+            type_name: Simple type name
+            package_name: Current package name
+            symbol_table: Symbol table for type resolution
+
+        Returns:
+            Qualified name of the type, or None if not found
+        """
+        # First, try same package
+        if package_name:
+            same_pkg_qualified = f"{package_name}.{type_name}"
+        else:
+            same_pkg_qualified = type_name
+
+        candidates = symbol_table.type_map.get(type_name, [])
+        if same_pkg_qualified in candidates:
+            return same_pkg_qualified
+
+        # Fall back to first candidate if only one exists
+        if len(candidates) == 1:
+            return candidates[0]
+
+        # If type not found yet, assume it's in the same package
+        # (it may be defined later in the scan)
+        return same_pkg_qualified
 
     def _scan_callable_declarations(
         self,
