@@ -6,6 +6,8 @@ from pathlib import Path
 
 from synapse.core.models import IR, LanguageType
 from synapse.enrichers.base import IREnricher
+from synapse.enrichers.fiber import FiberEnricher
+from synapse.enrichers.gin import GinEnricher
 from synapse.enrichers.laravel import LaravelEnricher
 from synapse.enrichers.spring import SpringEnricher
 
@@ -15,6 +17,8 @@ def get_default_enrichers() -> list[IREnricher]:
     return [
         SpringEnricher(),
         LaravelEnricher(),
+        GinEnricher(),
+        FiberEnricher(),
     ]
 
 
@@ -29,4 +33,3 @@ def enrich_ir(ir: IR, source_path: Path, languages: set[LanguageType]) -> list[s
         except Exception as exc:
             errors.append(f"{enricher.name}: {exc}")
     return errors
-
