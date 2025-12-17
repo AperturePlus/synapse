@@ -37,7 +37,33 @@ synapse purge <project-id>           # Permanently delete an archived project
 synapse query calls <callable-id>    # Query call chains
 synapse query types <type-id>        # Query type hierarchy
 synapse query modules <module-id>    # Query module dependencies
+
+# Machine-readable output (for integrations)
+synapse query calls <callable-id> --json
 ```
+
+## Python SDK
+
+```python
+from synapse.client import SynapseClient
+
+with SynapseClient() as client:
+    projects = client.projects.list_projects()
+    # client.query.get_call_chain(...)
+```
+
+## HTTP API (optional)
+
+```bash
+uv sync --group api
+uv run synapse serve --host 127.0.0.1 --port 8000
+```
+
+Endpoints:
+- `GET /health`
+- `GET /projects`, `POST /projects`, `POST /projects/{project_id}/scan`
+- `GET /resolve/module|type|callable`
+- `GET /query/call-chain|type-hierarchy|module-dependencies`
 
 ## Configuration
 

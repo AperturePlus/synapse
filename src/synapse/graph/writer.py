@@ -254,9 +254,10 @@ class GraphWriter:
         valid_ids.update(ir.types.keys())
         valid_ids.update(ir.callables.keys())
 
-        # Also query existing IDs from database for this project
+        # Also query existing IDs from the database for this project.
+        # Restrict to known labels to avoid a full-graph scan; Neo4j indexes are label-scoped.
         query = """
-        MATCH (n)
+        MATCH (n:Module|Type|Callable)
         WHERE n.projectId = $projectId
         RETURN n.id AS id
         """
@@ -500,10 +501,12 @@ class GraphWriter:
         Returns:
             Number of nodes deleted.
         """
+        # Restrict to known labels to avoid a full-graph scan; Neo4j indexes are label-scoped.
         query = """
-        MATCH (n {projectId: $projectId})
+        MATCH (n:Module|Type|Callable)
+        WHERE n.projectId = $projectId
         DETACH DELETE n
-        RETURN count(n) AS deleted
+        RETURN count(*) AS deleted
         """
         with self._connection.session() as session:
             result = session.run(query, {"projectId": project_id})

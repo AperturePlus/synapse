@@ -227,6 +227,40 @@ class TestQueryCommands:
                 assert result.exit_code == 0
                 assert "callerMethod" in result.output
 
+    def test_query_calls_json_output(self, mock_connection):
+        """Test JSON output for call chain query."""
+        from synapse.graph.queries import CallChainResult, CallableInfo
+
+        mock_result = CallChainResult(
+            root_id="callable123",
+            callers=[
+                CallableInfo(
+                    id="caller1",
+                    name="callerMethod",
+                    qualified_name="com.example.Caller.callerMethod",
+                    kind="METHOD",
+                    signature="()V",
+                    depth=1,
+                )
+            ],
+            callees=[],
+            total_callers=1,
+            total_callees=0,
+        )
+
+        with patch("synapse.cli.main.get_connection", return_value=mock_connection):
+            with patch("synapse.services.query_service.QueryService") as MockService:
+                mock_service = MockService.return_value
+                mock_service.get_call_chain.return_value = mock_result
+
+                result = runner.invoke(app, ["query", "calls", "callable123", "--json"])
+
+                assert result.exit_code == 0
+                data = json.loads(result.output)
+                assert data["root_id"] == "callable123"
+                assert data["total_callers"] == 1
+                assert data["callers"][0]["id"] == "caller1"
+
     def test_query_types_success(self, mock_connection):
         """Test successful type hierarchy query."""
         from synapse.graph.queries import TypeHierarchyResult, TypeInfo
@@ -256,6 +290,39 @@ class TestQueryCommands:
 
                 assert result.exit_code == 0
                 assert "ParentClass" in result.output
+
+    def test_query_types_json_output(self, mock_connection):
+        """Test JSON output for type hierarchy query."""
+        from synapse.graph.queries import TypeHierarchyResult, TypeInfo
+
+        mock_result = TypeHierarchyResult(
+            root_id="type123",
+            ancestors=[
+                TypeInfo(
+                    id="parent1",
+                    name="ParentClass",
+                    qualified_name="com.example.ParentClass",
+                    kind="CLASS",
+                    depth=1,
+                )
+            ],
+            descendants=[],
+            total_ancestors=1,
+            total_descendants=0,
+        )
+
+        with patch("synapse.cli.main.get_connection", return_value=mock_connection):
+            with patch("synapse.services.query_service.QueryService") as MockService:
+                mock_service = MockService.return_value
+                mock_service.get_type_hierarchy.return_value = mock_result
+
+                result = runner.invoke(app, ["query", "types", "type123", "--json"])
+
+                assert result.exit_code == 0
+                data = json.loads(result.output)
+                assert data["root_id"] == "type123"
+                assert data["total_ancestors"] == 1
+                assert data["ancestors"][0]["id"] == "parent1"
 
     def test_query_modules_success(self, mock_connection):
         """Test successful module dependency query."""
@@ -294,6 +361,46 @@ class TestQueryCommands:
 
                 assert result.exit_code == 0
                 assert "target" in result.output
+
+    def test_query_modules_json_output(self, mock_connection):
+        """Test JSON output for module dependency query."""
+        from synapse.graph.queries import ModuleDependency, ModuleInfo, PaginatedResult
+
+        mock_result = PaginatedResult(
+            items=[
+                ModuleDependency(
+                    source_module=ModuleInfo(
+                        id="mod1",
+                        name="source",
+                        qualified_name="com.example.source",
+                        path="/src/source",
+                    ),
+                    target_module=ModuleInfo(
+                        id="mod2",
+                        name="target",
+                        qualified_name="com.example.target",
+                        path="/src/target",
+                    ),
+                    dependency_type="EXTENDS",
+                )
+            ],
+            page=1,
+            page_size=100,
+            total=1,
+            has_next=False,
+        )
+
+        with patch("synapse.cli.main.get_connection", return_value=mock_connection):
+            with patch("synapse.services.query_service.QueryService") as MockService:
+                mock_service = MockService.return_value
+                mock_service.get_module_dependencies.return_value = mock_result
+
+                result = runner.invoke(app, ["query", "modules", "mod1", "--json"])
+
+                assert result.exit_code == 0
+                data = json.loads(result.output)
+                assert data["total"] == 1
+                assert data["items"][0]["target_module"]["id"] == "mod2"
 
 
 class TestExportCommand:

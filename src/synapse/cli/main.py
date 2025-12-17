@@ -6,14 +6,17 @@ enabling project registration, code scanning, querying, and export.
 
 from __future__ import annotations
 
+import json
 import traceback
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
 from dotenv import load_dotenv
 from rich.console import Console
-from rich.table import Table
 
 # Load environment variables from .env file
 load_dotenv()
@@ -90,6 +93,54 @@ def get_connection():
         raise typer.Exit(1)
 
 
+@contextmanager
+def open_connection() -> Iterator[object]:
+    """Context manager that opens and closes the Neo4j connection."""
+    conn = get_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@app.command()
+def serve(
+    host: Annotated[
+        str,
+        typer.Option("--host", help="Bind host for the HTTP API"),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option("--port", help="Bind port for the HTTP API"),
+    ] = 8000,
+    reload: Annotated[
+        bool,
+        typer.Option("--reload", help="Auto-reload on code changes (dev only)"),
+    ] = False,
+) -> None:
+    """Run Synapse HTTP API server (optional dependency).
+
+    Requires the `api` dependency group (FastAPI + Uvicorn).
+    """
+    try:
+        import uvicorn  # type: ignore[import-not-found]
+    except ImportError as e:
+        err_console.print(
+            "[red]Error:[/red] HTTP API dependencies are not installed.\n"
+            "[yellow]Hint:[/yellow] Install with: uv sync --group api"
+        )
+        print_exception(e)
+        raise typer.Exit(1)
+
+    uvicorn.run(
+        "synapse.api.app:create_app",
+        host=host,
+        port=port,
+        reload=reload,
+        factory=True,
+    )
+
+
 @app.command()
 def init(
     project_path: Annotated[
@@ -115,8 +166,7 @@ def init(
     """
     from synapse.services.project_service import ProjectService, ProjectExistsError
 
-    conn = get_connection()
-    try:
+    with open_connection() as conn:
         service = ProjectService(conn)
         project_name = name or project_path.name
 
@@ -133,8 +183,6 @@ def init(
             console.print(f"  Name: {e.existing_project.name}")
             print_exception(e)
             raise typer.Exit(1)
-    finally:
-        conn.close()
 
 
 @app.command()
@@ -149,8 +197,7 @@ def scan(
     from synapse.services.project_service import ProjectService, ProjectNotFoundError
     from synapse.services.scanner_service import ScannerService
 
-    conn = get_connection()
-    try:
+    with open_connection() as conn:
         # Verify project exists
         project_service = ProjectService(conn)
         project = project_service.get_by_id(project_id)
@@ -183,8 +230,6 @@ def scan(
             for error in result.errors:
                 err_console.print(f"  - {error}")
             raise typer.Exit(1)
-    finally:
-        conn.close()
 
 
 
@@ -207,6 +252,10 @@ def query_calls(
         int,
         typer.Option("--page-size", "-s", help="Results per page"),
     ] = 100,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output machine-readable JSON"),
+    ] = False,
 ) -> None:
     """Query call chain for a callable.
 
@@ -214,14 +263,14 @@ def query_calls(
         synapse query calls abc123 --direction callees --depth 3
     """
     from synapse.services.query_service import QueryService
+    from synapse.cli._tables import build_depth_named_table
 
     if direction not in ("callers", "callees", "both"):
         err_console.print(f"[red]Error:[/red] Invalid direction: {direction}")
         err_console.print("  Valid options: callers, callees, both")
         raise typer.Exit(1)
 
-    conn = get_connection()
-    try:
+    with open_connection() as conn:
         service = QueryService(conn)
         result = service.get_call_chain(
             callable_id=callable_id,
@@ -231,44 +280,22 @@ def query_calls(
             page_size=page_size,
         )
 
+        if json_output:
+            typer.echo(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+            return
+
         console.print(f"[blue]Call chain for:[/blue] {callable_id}")
 
         if direction in ("callers", "both") and result.callers:
             console.print(f"\n[green]Callers ({result.total_callers} total):[/green]")
-            table = Table(show_header=True)
-            table.add_column("Depth")
-            table.add_column("Name")
-            table.add_column("Qualified Name")
-            table.add_column("Kind")
-            for caller in result.callers:
-                table.add_row(
-                    str(caller.depth),
-                    caller.name,
-                    caller.qualified_name,
-                    caller.kind,
-                )
-            console.print(table)
+            console.print(build_depth_named_table(result.callers))
 
         if direction in ("callees", "both") and result.callees:
             console.print(f"\n[green]Callees ({result.total_callees} total):[/green]")
-            table = Table(show_header=True)
-            table.add_column("Depth")
-            table.add_column("Name")
-            table.add_column("Qualified Name")
-            table.add_column("Kind")
-            for callee in result.callees:
-                table.add_row(
-                    str(callee.depth),
-                    callee.name,
-                    callee.qualified_name,
-                    callee.kind,
-                )
-            console.print(table)
+            console.print(build_depth_named_table(result.callees))
 
         if not result.callers and not result.callees:
             console.print("[yellow]No call chain data found[/yellow]")
-    finally:
-        conn.close()
 
 
 @query_app.command("types")
@@ -286,6 +313,10 @@ def query_types(
         int,
         typer.Option("--page-size", "-s", help="Results per page"),
     ] = 100,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output machine-readable JSON"),
+    ] = False,
 ) -> None:
     """Query type inheritance hierarchy.
 
@@ -293,14 +324,14 @@ def query_types(
         synapse query types abc123 --direction ancestors
     """
     from synapse.services.query_service import QueryService
+    from synapse.cli._tables import build_depth_named_table
 
     if direction not in ("ancestors", "descendants", "both"):
         err_console.print(f"[red]Error:[/red] Invalid direction: {direction}")
         err_console.print("  Valid options: ancestors, descendants, both")
         raise typer.Exit(1)
 
-    conn = get_connection()
-    try:
+    with open_connection() as conn:
         service = QueryService(conn)
         result = service.get_type_hierarchy(
             type_id=type_id,
@@ -309,44 +340,22 @@ def query_types(
             page_size=page_size,
         )
 
+        if json_output:
+            typer.echo(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+            return
+
         console.print(f"[blue]Type hierarchy for:[/blue] {type_id}")
 
         if direction in ("ancestors", "both") and result.ancestors:
             console.print(f"\n[green]Ancestors ({result.total_ancestors} total):[/green]")
-            table = Table(show_header=True)
-            table.add_column("Depth")
-            table.add_column("Name")
-            table.add_column("Qualified Name")
-            table.add_column("Kind")
-            for ancestor in result.ancestors:
-                table.add_row(
-                    str(ancestor.depth),
-                    ancestor.name,
-                    ancestor.qualified_name,
-                    ancestor.kind,
-                )
-            console.print(table)
+            console.print(build_depth_named_table(result.ancestors))
 
         if direction in ("descendants", "both") and result.descendants:
             console.print(f"\n[green]Descendants ({result.total_descendants} total):[/green]")
-            table = Table(show_header=True)
-            table.add_column("Depth")
-            table.add_column("Name")
-            table.add_column("Qualified Name")
-            table.add_column("Kind")
-            for descendant in result.descendants:
-                table.add_row(
-                    str(descendant.depth),
-                    descendant.name,
-                    descendant.qualified_name,
-                    descendant.kind,
-                )
-            console.print(table)
+            console.print(build_depth_named_table(result.descendants))
 
         if not result.ancestors and not result.descendants:
             console.print("[yellow]No type hierarchy data found[/yellow]")
-    finally:
-        conn.close()
 
 
 @query_app.command("modules")
@@ -360,6 +369,10 @@ def query_modules(
         int,
         typer.Option("--page-size", "-s", help="Results per page"),
     ] = 100,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output machine-readable JSON"),
+    ] = False,
 ) -> None:
     """Query module dependencies.
 
@@ -367,9 +380,9 @@ def query_modules(
         synapse query modules abc123
     """
     from synapse.services.query_service import QueryService
+    from synapse.cli._tables import build_module_dependencies_table
 
-    conn = get_connection()
-    try:
+    with open_connection() as conn:
         service = QueryService(conn)
         result = service.get_module_dependencies(
             module_id=module_id,
@@ -377,28 +390,20 @@ def query_modules(
             page_size=page_size,
         )
 
+        if json_output:
+            typer.echo(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+            return
+
         console.print(f"[blue]Module dependencies for:[/blue] {module_id}")
         console.print(f"Total: {result.total}")
 
         if result.items:
-            table = Table(show_header=True)
-            table.add_column("Target Module")
-            table.add_column("Qualified Name")
-            table.add_column("Dependency Type")
-            for dep in result.items:
-                table.add_row(
-                    dep.target_module.name,
-                    dep.target_module.qualified_name,
-                    dep.dependency_type,
-                )
-            console.print(table)
+            console.print(build_module_dependencies_table(result.items))
 
             if result.has_next:
                 console.print(f"[dim]Page {result.page} of more. Use --page to see more.[/dim]")
         else:
             console.print("[yellow]No dependencies found[/yellow]")
-    finally:
-        conn.close()
 
 
 @app.command()
@@ -415,11 +420,10 @@ def export(
         synapse export abc123 -o project.json
     """
     from synapse.services.project_service import ProjectService
-    from synapse.services.scanner_service import ScannerService
     from synapse.core.serializer import serialize
+    from synapse.cli._export_helpers import build_merged_ir
 
-    conn = get_connection()
-    try:
+    with open_connection() as conn:
         # Verify project exists
         project_service = ProjectService(conn)
         project = project_service.get_by_id(project_id)
@@ -430,28 +434,9 @@ def export(
         console.print(f"[blue]Exporting project:[/blue] {project.name}")
 
         # Scan to get IR (without writing to graph)
-        scanner = ScannerService(conn)
         with console.status("[bold blue]Generating IR..."):
-            # Re-scan to get fresh IR
-            from synapse.adapters import JavaAdapter, GoAdapter
-            from synapse.core.models import IR, LanguageType
-            from pathlib import Path as PathLib
-
-            source_path = PathLib(project.path)
-            merged_ir: IR | None = None
-
-            # Detect and scan languages
-            for ext, lang in [(".java", LanguageType.JAVA), (".go", LanguageType.GO)]:
-                if list(source_path.rglob(f"*{ext}")):
-                    if lang == LanguageType.JAVA:
-                        adapter = JavaAdapter(project_id)
-                    else:
-                        adapter = GoAdapter(project_id)
-                    ir = adapter.analyze(source_path)
-                    if merged_ir is None:
-                        merged_ir = ir
-                    else:
-                        merged_ir = merged_ir.merge(ir)
+            source_path = Path(project.path)
+            merged_ir = build_merged_ir(project_id, source_path)
 
             if merged_ir is None:
                 err_console.print("[red]Error:[/red] No source files found")
@@ -465,8 +450,6 @@ def export(
         console.print(f"  Modules: {len(merged_ir.modules)}")
         console.print(f"  Types: {len(merged_ir.types)}")
         console.print(f"  Callables: {len(merged_ir.callables)}")
-    finally:
-        conn.close()
 
 
 @app.command()
@@ -483,9 +466,9 @@ def list_projects(
         synapse list-projects --include-archived
     """
     from synapse.services.project_service import ProjectService
+    from synapse.cli._tables import build_projects_table
 
-    conn = get_connection()
-    try:
+    with open_connection() as conn:
         service = ProjectService(conn)
         projects = service.list_projects(include_archived=include_archived)
 
@@ -496,36 +479,7 @@ def list_projects(
                 console.print("[yellow]No active projects registered[/yellow]")
             return
 
-        title = "All Projects" if include_archived else "Active Projects"
-        table = Table(show_header=True, title=title)
-        table.add_column("ID", style="cyan")
-        table.add_column("Name")
-        table.add_column("Path")
-        table.add_column("Created At")
-        if include_archived:
-            table.add_column("Status")
-
-        for project in projects:
-            if include_archived:
-                status = "[red]Archived[/red]" if project.archived else "[green]Active[/green]"
-                table.add_row(
-                    project.id,
-                    project.name,
-                    project.path,
-                    project.created_at.strftime("%Y-%m-%d %H:%M"),
-                    status,
-                )
-            else:
-                table.add_row(
-                    project.id,
-                    project.name,
-                    project.path,
-                    project.created_at.strftime("%Y-%m-%d %H:%M"),
-                )
-
-        console.print(table)
-    finally:
-        conn.close()
+        console.print(build_projects_table(projects, include_archived=include_archived))
 
 
 @app.command()
@@ -548,8 +502,7 @@ def delete(
     """
     from synapse.services.project_service import ProjectService
 
-    conn = get_connection()
-    try:
+    with open_connection() as conn:
         service = ProjectService(conn)
         project = service.get_by_id(project_id)
 
@@ -571,8 +524,6 @@ def delete(
         else:
             err_console.print(f"[red]Error:[/red] Failed to archive project")
             raise typer.Exit(1)
-    finally:
-        conn.close()
 
 
 @app.command()
@@ -588,8 +539,7 @@ def restore(
     """
     from synapse.services.project_service import ProjectService
 
-    conn = get_connection()
-    try:
+    with open_connection() as conn:
         service = ProjectService(conn)
         # Check if project exists (including archived)
         project = service.get_by_id(project_id, include_archived=True)
@@ -607,8 +557,6 @@ def restore(
         else:
             err_console.print(f"[red]Error:[/red] Failed to restore project")
             raise typer.Exit(1)
-    finally:
-        conn.close()
 
 
 @app.command()
@@ -630,8 +578,7 @@ def purge(
     """
     from synapse.services.project_service import ProjectService, ProjectNotArchivedError
 
-    conn = get_connection()
-    try:
+    with open_connection() as conn:
         service = ProjectService(conn)
         # Check if project exists (including archived)
         project = service.get_by_id(project_id, include_archived=True)
@@ -662,8 +609,6 @@ def purge(
             err_console.print("[yellow]Hint:[/yellow] Use 'synapse delete' first to archive")
             print_exception(ProjectNotArchivedError(project_id))
             raise typer.Exit(1)
-    finally:
-        conn.close()
 
 
 if __name__ == "__main__":

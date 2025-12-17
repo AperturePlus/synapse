@@ -14,10 +14,21 @@ from synapse.services.query_service import (
     QueryService,
     TypeHierarchyQuery,
 )
+from synapse.services.resolver_service import (
+    AmbiguousCallableError,
+    CallableRef,
+    EntityResolverService,
+    ModuleRef,
+    TypeRef,
+)
 from synapse.services.scanner_service import ScannerService, ScanResult
 
 __all__ = [
+    "AmbiguousCallableError",
     "CallChainQuery",
+    "CallableRef",
+    "EntityResolverService",
+    "ModuleRef",
     "ModuleDependencyQuery",
     "Project",
     "ProjectCreateResult",
@@ -28,5 +39,6 @@ __all__ = [
     "QueryService",
     "ScannerService",
     "ScanResult",
+    "TypeRef",
     "TypeHierarchyQuery",
 ]

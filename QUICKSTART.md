@@ -150,6 +150,7 @@ uv run synapse -v scan <project-id>  # verbose 模式
 uv run synapse query calls <callable-id> --direction both --depth 5
 uv run synapse query types <type-id> --direction ancestors
 uv run synapse query modules <module-id>
+uv run synapse query calls <callable-id> --json  # 机器可读 JSON 输出（便于集成）
 
 # 导出
 uv run synapse export <project-id> -o output.json
@@ -234,3 +235,12 @@ rm -rf .venv
 - 查看命令帮助：`uv run synapse <command> --help`
 - 查看测试指南：[TESTING.md](TESTING.md)
 - 查看项目结构：`.kiro/steering/structure.md`
+
+## 可选：启动 HTTP API
+
+如果你需要跨语言/IDE 集成，可以启动可选的 HTTP API：
+
+```bash
+uv sync --group api
+uv run synapse serve --host 127.0.0.1 --port 8000
+```

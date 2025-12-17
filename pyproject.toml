@@ -66,6 +66,11 @@ docs = [
     "mkdocs-material>=9.0.0",
 ]
 
+api = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+]
+
 # ------------------------------------------------------------------
 #  Tools Configuration
 # ------------------------------------------------------------------
@@ -108,5 +113,5 @@ check_untyped_defs = true
 
 [[tool.mypy.overrides]]
 # 针对某些可能没有类型提示的第三方库忽略错误
-module = ["tree_sitter.*", "neo4j.*"]
+module = ["tree_sitter.*", "neo4j.*", "fastapi.*", "uvicorn.*"]
 ignore_missing_imports = true
